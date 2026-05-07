@@ -144,13 +144,13 @@ type CheckRun struct {
 	Status     graphql.String
 	Conclusion checks.CheckRunState
 	DetailsUrl graphql.String
-	// Output.Summary is the markdown body that some CI integrations write
-	// to surface job-level detail beyond a single pass/fail (e.g.
-	// Deepfield's FI Tests posts a markdown table of per-job results).
+	// Summary is the markdown body that some CI integrations write to
+	// surface job-level detail beyond a single pass/fail (e.g. Deepfield's
+	// FI Tests posts a markdown table of per-job results). Lives directly
+	// on CheckRun in the GraphQL schema — there is NO nested `output`
+	// object, despite the parallel REST shape suggesting otherwise.
 	// Cheap to fetch — populated for every check, parsed only when needed.
-	Output struct {
-		Summary graphql.String
-	}
+	Summary graphql.String
 	CheckSuite struct {
 		Creator struct {
 			Login graphql.String

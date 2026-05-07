@@ -42,7 +42,7 @@ func parseFITests(checkRun data.CheckRun) (jobs []fiSubJob, progress string) {
 	if string(checkRun.Name) != fiTestCheckName {
 		return nil, ""
 	}
-	summary := string(checkRun.Output.Summary)
+	summary := string(checkRun.Summary)
 	if summary == "" {
 		return nil, ""
 	}
