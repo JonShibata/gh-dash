@@ -143,6 +143,7 @@ type CheckRun struct {
 	Name       graphql.String
 	Status     graphql.String
 	Conclusion checks.CheckRunState
+	DetailsUrl graphql.String
 	CheckSuite struct {
 		Creator struct {
 			Login graphql.String
@@ -156,9 +157,10 @@ type CheckRun struct {
 }
 
 type StatusContext struct {
-	Context graphql.String
-	State   graphql.String
-	Creator struct {
+	Context   graphql.String
+	State     graphql.String
+	TargetUrl graphql.String
+	Creator   struct {
 		Login graphql.String
 	}
 }

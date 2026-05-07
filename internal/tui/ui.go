@@ -456,6 +456,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prView.SetSummaryViewMore()
 				m.syncSidebar()
 				return m, nil
+
+			case key.Matches(msg, keys.PRKeys.OpenFirstFailed):
+				cmds = append(cmds, m.openFirstFailedCheck())
 			}
 		case m.ctx.View == config.IssuesView:
 			switch {
