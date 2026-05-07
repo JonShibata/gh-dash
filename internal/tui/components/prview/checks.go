@@ -369,16 +369,36 @@ const (
 	CheckSuccess
 )
 
+// renderCheckBadge returns a solid-background pill for a check status, e.g.
+// " ✓ PASS ", " ✗ FAIL ", " ● PEND ". Heavier visual weight than a plain
+// glyph so failures and pending counts pop in a busy checks list.
+func (m *Model) renderCheckBadge(category CheckCategory) string {
+	style := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(m.ctx.Theme.InvertedText).
+		Padding(0, 1)
+	switch category {
+	case CheckFailure:
+		return style.Background(m.ctx.Theme.ErrorText).Render("✗ FAIL")
+	case CheckWaiting:
+		return style.Background(m.ctx.Theme.WarningText).Render("● PEND")
+	case CheckSuccess:
+		return style.Background(m.ctx.Theme.SuccessText).Render("✓ PASS")
+	default:
+		return style.Background(m.ctx.Theme.FaintText).Render("· SKIP")
+	}
+}
+
 func (m *Model) renderCheckRunConclusion(checkRun data.CheckRun) (CheckCategory, string) {
 	if ghchecks.IsStatusWaiting(string(checkRun.Status)) {
-		return CheckWaiting, m.ctx.Styles.Common.WaitingGlyph
+		return CheckWaiting, m.renderCheckBadge(CheckWaiting)
 	}
 
 	if ghchecks.IsConclusionAFailure(string(checkRun.Conclusion)) {
-		return CheckFailure, m.ctx.Styles.Common.FailureGlyph
+		return CheckFailure, m.renderCheckBadge(CheckFailure)
 	}
 
-	return CheckSuccess, m.ctx.Styles.Common.SuccessGlyph
+	return CheckSuccess, m.renderCheckBadge(CheckSuccess)
 }
 
 func (m *Model) renderStatusContextConclusion(
@@ -386,14 +406,14 @@ func (m *Model) renderStatusContextConclusion(
 ) (CheckCategory, string) {
 	conclusionStr := string(statusContext.State)
 	if ghchecks.IsStatusWaiting(conclusionStr) {
-		return CheckWaiting, m.ctx.Styles.Common.WaitingGlyph
+		return CheckWaiting, m.renderCheckBadge(CheckWaiting)
 	}
 
 	if ghchecks.IsConclusionAFailure(conclusionStr) {
-		return CheckFailure, m.ctx.Styles.Common.FailureGlyph
+		return CheckFailure, m.renderCheckBadge(CheckFailure)
 	}
 
-	return CheckSuccess, m.ctx.Styles.Common.SuccessGlyph
+	return CheckSuccess, m.renderCheckBadge(CheckSuccess)
 }
 
 func renderStatusContextName(statusContext data.StatusContext) string {
@@ -473,12 +493,14 @@ func (sidebar *Model) renderChecks() string {
 		var category CheckCategory
 		var check string
 		var checkName string
+		var checkUrl string
 		switch node.Typename {
 		case "CheckRun":
 			checkRun := node.CheckRun
 			var renderedStatus string
 			category, renderedStatus = sidebar.renderCheckRunConclusion(checkRun)
 			checkName = string(checkRun.Name)
+			checkUrl = string(checkRun.DetailsUrl)
 			name := renderCheckRunName(checkRun)
 			check = lipgloss.JoinHorizontal(lipgloss.Top, renderedStatus, " ", name)
 		case "StatusContext":
@@ -486,6 +508,7 @@ func (sidebar *Model) renderChecks() string {
 			var status string
 			category, status = sidebar.renderStatusContextConclusion(statusContext)
 			checkName = string(statusContext.Context)
+			checkUrl = string(statusContext.TargetUrl)
 			check = lipgloss.JoinHorizontal(
 				lipgloss.Top,
 				status,
@@ -501,6 +524,16 @@ func (sidebar *Model) renderChecks() string {
 			waiting = append(waiting, check)
 		case CheckFailure:
 			failures = append(failures, check)
+			// Drilldown URL on its own indented line under each failure.
+			// Lets the reader copy/click the build log without opening a
+			// separate view; mirrors gplm's "→ <url>" pattern.
+			if checkUrl != "" {
+				urlLine := lipgloss.NewStyle().
+					Foreground(sidebar.ctx.Theme.FaintText).
+					PaddingLeft(8).
+					Render("→ " + checkUrl)
+				failures = append(failures, urlLine)
+			}
 		default:
 			rest = append(rest, check)
 		}

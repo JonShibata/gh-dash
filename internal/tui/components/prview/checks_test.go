@@ -351,8 +351,8 @@ func TestRenderChecks_MixedStates(t *testing.T) {
 		"expected 'Label by path' check, got: %q", got)
 	require.True(t, strings.Contains(got, "Label by size"),
 		"expected 'Label by size' check, got: %q", got)
-	require.True(t, strings.Contains(got, constants.SuccessIcon),
-		"expected SuccessIcon for successful checks, got: %q", got)
+	require.True(t, strings.Contains(got, "PASS"),
+		"expected PASS badge for successful checks, got: %q", got)
 }
 
 func TestRenderChecks_NoChecks(t *testing.T) {
@@ -397,13 +397,13 @@ func TestRenderChecks_FailedChecks(t *testing.T) {
 	require.True(t, strings.Contains(got, "lint"),
 		"expected 'lint' check, got: %q", got)
 
-	// Should have failure icon
-	require.True(t, strings.Contains(got, constants.FailureIcon),
-		"expected FailureIcon for failed check, got: %q", got)
+	// Should have failure badge
+	require.True(t, strings.Contains(got, "FAIL"),
+		"expected FAIL badge for failed check, got: %q", got)
 
-	// Should have success icon
-	require.True(t, strings.Contains(got, constants.SuccessIcon),
-		"expected SuccessIcon for successful check, got: %q", got)
+	// Should have success badge
+	require.True(t, strings.Contains(got, "PASS"),
+		"expected PASS badge for successful check, got: %q", got)
 }
 
 func TestRenderChecks_InProgressChecks(t *testing.T) {
@@ -429,9 +429,9 @@ func TestRenderChecks_InProgressChecks(t *testing.T) {
 	require.True(t, strings.Contains(got, "lint"),
 		"expected 'lint' check, got: %q", got)
 
-	// Should have waiting icon for in-progress checks
-	require.True(t, strings.Contains(got, constants.WaitingIcon),
-		"expected WaitingIcon for in-progress checks, got: %q", got)
+	// Should have pending badge for in-progress checks
+	require.True(t, strings.Contains(got, "PEND"),
+		"expected PEND badge for in-progress checks, got: %q", got)
 }
 
 func TestGetChecksStats_AwaitingApproval(t *testing.T) {
