@@ -107,6 +107,14 @@ type PullRequestData struct {
 			Login string
 		}
 	} `graphql:"autoMergeRequest"`
+	// MergeQueueEntry is non-empty (Position > 0) only when the PR has been
+	// picked up by the merge queue. Use it for "QUEUED #N (1:15 to merge)"
+	// style status display.
+	MergeQueueEntry struct {
+		Position             int
+		State                string
+		EstimatedTimeToMerge int
+	} `graphql:"mergeQueueEntry"`
 	Commits          Commits          `graphql:"commits(last: 1)"`
 	Labels           PRLabels         `graphql:"labels(first: 6)"`
 	MergeStateStatus MergeStateStatus `graphql:"mergeStateStatus"`
@@ -120,6 +128,17 @@ func (data PullRequestData) HasAutoMerge() bool {
 	return data.AutoMergeRequest.EnabledBy.Login != ""
 }
 
+// FormatEstimatedTimeToMerge renders the queue ETA as H:MM (e.g. "1:15"
+// for 1h 15m). Rounds to the nearest minute. Returns "" when no estimate.
+func (data PullRequestData) FormatEstimatedTimeToMerge() string {
+	secs := data.MergeQueueEntry.EstimatedTimeToMerge
+	if secs <= 0 {
+		return ""
+	}
+	totalMin := (secs + 30) / 60
+	h, m := totalMin/60, totalMin%60
+	return fmt.Sprintf("%d:%02d", h, m)
+}
 type CheckRun struct {
 	Name       graphql.String
 	Status     graphql.String

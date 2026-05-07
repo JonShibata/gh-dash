@@ -359,7 +359,18 @@ func (pr *PullRequest) RenderState() string {
 	switch pr.Data.Primary.State {
 	case "OPEN":
 		if pr.Data.Primary.IsInMergeQueue {
-			return constants.MergeQueueIcon + " Queued"
+			extras := []string{}
+			if pos := pr.Data.Primary.MergeQueueEntry.Position; pos > 0 {
+				extras = append(extras, fmt.Sprintf("#%d", pos))
+			}
+			if eta := pr.Data.Primary.FormatEstimatedTimeToMerge(); eta != "" {
+				extras = append(extras, eta)
+			}
+			label := constants.MergeQueueIcon + " Queued"
+			if len(extras) > 0 {
+				label += " (" + strings.Join(extras, " · ") + ")"
+			}
+			return label
 		}
 		if pr.Data.Primary.HasAutoMerge() {
 			return constants.MergeQueueIcon + " Auto"
