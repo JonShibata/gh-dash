@@ -62,6 +62,13 @@ type Model struct {
 	ctx              *context.ProgramContext
 	taskSpinner      spinner.Model
 	tasks            map[string]context.Task
+	// lastViewedRowKey is "<sectionId>:<prNumber>" of the row currently
+	// shown in the sidebar. Compared on SectionMsg to distinguish between
+	// "the user moved the cursor" (needs full sidebar reset: tab → first,
+	// scroll → top, re-enrich) and "this section's data updated under a
+	// stationary cursor" (just sync sidebar content). Empty when nothing
+	// is selected yet.
+	lastViewedRowKey string
 	positionOverride string // "" means no override, "right" or "bottom"
 }
 
@@ -289,11 +296,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Refresh):
 			if currSection != nil {
 				data.ClearEnrichmentCache()
-				currSection.ResetFilters()
-				currSection.ResetRows()
-				m.syncSidebar()
-				currSection.SetIsLoading(true)
-				cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
+				// Soft path for PR sections: keep the visible list rendered
+				// while the fetch is in flight, then atomically swap in the
+				// fresh page when it returns. The blank-then-load behavior
+				// upstream uses for `r` is jarring during live CI watching.
+				// Filter state is preserved (no ResetFilters) — refresh
+				// means "re-fetch", not "wipe my view".
+				if prSection, ok := currSection.(*prssection.Model); ok {
+					prSection.SoftReset()
+					cmds = append(cmds, prSection.FetchNextPageSectionRows()...)
+					// Force re-fetch the sidebar's enriched payload —
+					// EnrichCurrRow short-circuits when already enriched,
+					// so manual `r` would otherwise leave the sidebar
+					// stale while the list refreshes.
+					cmds = append(cmds, m.prView.RefreshEnrichedCurrRow())
+				} else {
+					currSection.ResetFilters()
+					currSection.ResetRows()
+					m.syncSidebar()
+					currSection.SetIsLoading(true)
+					cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
+				}
 			}
 
 		case key.Matches(msg, m.keys.RefreshAll):
@@ -703,9 +726,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.doRefreshAtInterval(), m.doUpdateFooterAtInterval())
 
 	case intervalRefresh:
-		newSections, fetchSectionsCmds := m.fetchAllViewSections()
-		m.setCurrentViewSections(newSections)
-		cmds = append(cmds, fetchSectionsCmds, m.doRefreshAtInterval())
+		// Soft tick: trigger a fetch on the EXISTING sections rather than
+		// rebuilding from ctx.Config.PRSections. Rebuilding is what wipes
+		// in-session edits like a search override — those live on the
+		// section's mutable filter state, not in config, and a fresh
+		// section from config knows nothing about them. Iterating the
+		// live sections preserves search, filters, and cursor position.
+		// Force-refresh the selected PR's enriched payload too —
+		// EnrichCurrRow no-ops once IsEnriched=true (so checks would go
+		// stale), but RefreshEnrichedCurrRow re-fetches unconditionally
+		// and swaps in place without a "Loading..." flash.
+		cmds = append(cmds, m.softRefreshExistingSections()...)
+		cmds = append(cmds, m.prView.RefreshEnrichedCurrRow(), m.doRefreshAtInterval())
 
 	case userFetchedMsg:
 		m.ctx.User = msg.user
@@ -821,7 +853,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.updateRelevantSection(msg)
 
 		if msg.Id == m.currSectionId {
-			cmds = append(cmds, m.onViewedRowChanged())
+			// Distinguish "cursor moved" from "data refreshed under the
+			// stationary cursor". The former should reset sidebar tab +
+			// scroll (a different PR is being viewed); the latter must
+			// NOT, otherwise every auto-refresh tick yanks the user back
+			// to the Overview tab and scroll-top.
+			newKey := m.viewedRowKey()
+			if newKey != m.lastViewedRowKey {
+				m.lastViewedRowKey = newKey
+				cmds = append(cmds, m.onViewedRowChanged())
+			} else {
+				cmds = append(cmds, m.syncSidebar())
+			}
 		}
 
 	case execProcessFinishedMsg, tea.FocusMsg:
@@ -1028,7 +1071,21 @@ func (m *Model) markNotificationAsRead(notificationId string) {
 	m.updateNotificationSections(readStateMsg)
 }
 
+// viewedRowKey returns a stable identifier for the row currently shown
+// in the sidebar — section ID combined with the row's PR number. Used to
+// detect cursor movement across SectionMsg events (which fire on every
+// fetch completion, including auto-refresh ticks). Empty string when no
+// row is selected.
+func (m *Model) viewedRowKey() string {
+	row := m.getCurrRowData()
+	if row == nil || reflect.ValueOf(row).IsNil() {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", m.currSectionId, row.GetNumber())
+}
+
 func (m *Model) onViewedRowChanged() tea.Cmd {
+	m.lastViewedRowKey = m.viewedRowKey()
 	m.prView.SetSummaryViewLess()
 	m.prView.GoToFirstTab()
 	sidebarCmd := m.syncSidebar()
@@ -1086,12 +1143,12 @@ func (m *Model) updateSection(id int, sType string, msg tea.Msg) (cmd tea.Cmd) {
 		m.issues[id] = updatedSection
 	}
 
-	currSection := m.getCurrSection()
-	if currSection != nil && id == currSection.GetId() {
-		if _, ok := msg.(prssection.SectionPullRequestsFetchedMsg); ok {
-			cmd = m.onViewedRowChanged()
-		}
-	}
+	// NOTE: this used to unconditionally fire onViewedRowChanged when a
+	// SectionPullRequestsFetchedMsg arrived for the current section,
+	// which yanked the sidebar back to the Overview tab on every fetch
+	// — including silent auto-refresh ticks. The decision now lives in
+	// the SectionMsg branch in Update, which compares viewedRowKey and
+	// only resets the sidebar when the cursor actually moved.
 
 	return cmd
 }
@@ -1719,7 +1776,15 @@ func (m *Model) isUserDefinedKeybinding(msg tea.KeyMsg) bool {
 func (m *Model) renderRunningTask() string {
 	tasks := make([]context.Task, 0, len(m.tasks))
 	for _, value := range m.tasks {
+		// Silent tasks are background fetches (e.g. auto-refresh); they
+		// have lifecycle in m.tasks but never surface in the status bar.
+		if value.Silent {
+			continue
+		}
 		tasks = append(tasks, value)
+	}
+	if len(tasks) == 0 {
+		return ""
 	}
 	sort.Slice(tasks, func(i, j int) bool {
 		if tasks[i].FinishedTime != nil && tasks[j].FinishedTime == nil {
@@ -1798,17 +1863,56 @@ func fetchUser() tea.Msg {
 
 type intervalRefresh time.Time
 
+// refetchInterval returns the effective auto-refresh interval. Seconds
+// wins over minutes when both are set, so a user can drop a 30 or 15 in
+// `refetchIntervalSeconds` for live CI watching without rewriting the
+// minutes default. Returns 0 to disable.
+func (m *Model) refetchInterval() time.Duration {
+	if s := m.ctx.Config.Defaults.RefetchIntervalSeconds; s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	if min := m.ctx.Config.Defaults.RefetchIntervalMinutes; min > 0 {
+		return time.Duration(min) * time.Minute
+	}
+	return 0
+}
+
 func (m *Model) doRefreshAtInterval() tea.Cmd {
-	if m.ctx.Config.Defaults.RefetchIntervalMinutes == 0 {
+	interval := m.refetchInterval()
+	if interval == 0 {
 		return nil
 	}
 
-	return tea.Tick(
-		time.Minute*time.Duration(m.ctx.Config.Defaults.RefetchIntervalMinutes),
-		func(t time.Time) tea.Msg {
-			return intervalRefresh(t)
-		},
-	)
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
+		return intervalRefresh(t)
+	})
+}
+
+// softRefreshExistingSections triggers a non-blanking re-fetch on every
+// PR section that's already in m.prs. We deliberately skip the
+// FetchAllSections path (which constructs fresh section instances from
+// config) because that drops in-session state — most importantly the
+// user's search override. SoftReset clears just enough state for the
+// next fetch to be treated as a first page; existing PRs stay rendered
+// until the new data arrives. Non-PR views fall back to the full rebuild
+// for now since their search/filter state is less prone to in-session
+// edits.
+func (m *Model) softRefreshExistingSections() []tea.Cmd {
+	if m.ctx.View != config.PRsView || len(m.prs) == 0 {
+		newSections, fetchSectionsCmds := m.fetchAllViewSections()
+		m.setCurrentViewSections(newSections)
+		return []tea.Cmd{fetchSectionsCmds}
+	}
+	cmds := make([]tea.Cmd, 0, len(m.prs))
+	for _, s := range m.prs {
+		prSection, ok := s.(*prssection.Model)
+		if !ok || prSection == nil {
+			continue
+		}
+		prSection.SoftReset()
+		cmds = append(cmds, prSection.FetchNextPageSectionRows()...)
+	}
+	return cmds
 }
 
 type updateFooterMsg struct{}

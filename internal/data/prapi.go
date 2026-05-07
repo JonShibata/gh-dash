@@ -185,6 +185,14 @@ type CheckSuiteNode struct {
 			Name graphql.String
 		}
 	}
+
+	// CheckRuns.TotalCount distinguishes real workflows from
+	// integration-subscription CheckSuites (e.g. Cursor, Figma) that sit
+	// at status=QUEUED forever without ever producing a check-run. We
+	// fetch with first:0 because we only care about the count.
+	CheckRuns struct {
+		TotalCount graphql.Int
+	} `graphql:"checkRuns(first: 0)"`
 }
 
 type CheckSuites struct {

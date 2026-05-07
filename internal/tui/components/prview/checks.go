@@ -485,8 +485,13 @@ func (sidebar *Model) renderChecks() string {
 				workflowName,
 			)
 			awaitingApproval = append(awaitingApproval, check)
-		} else if suite.Status == "QUEUED" || suite.Status == "PENDING" || suite.Status == "WAITING" {
-			// Workflow is queued/pending (will run automatically)
+		} else if suite.Conclusion == "" && suite.CheckRuns.TotalCount > 0 &&
+			(suite.Status == "QUEUED" || suite.Status == "PENDING" || suite.Status == "WAITING") {
+			// Workflow is genuinely queued/pending (no conclusion yet,
+			// has produced check-runs in the past or is about to). Skip
+			// when conclusion is set (already finished) OR when no
+			// check-runs exist (integration subscription noise like
+			// Cursor / Figma that never actually run anything).
 			check := lipgloss.JoinHorizontal(
 				lipgloss.Top,
 				sidebar.ctx.Styles.Common.WaitingGlyph,
@@ -499,6 +504,24 @@ func (sidebar *Model) renderChecks() string {
 
 	// Build a set of reported check names to compare against required checks
 	reportedChecks := make(map[string]bool)
+
+	// Pre-pass: collect FI sub-job names from any "FI Tests" check-run.
+	// gha_fi_test_manager publishes both an aggregate "FI Tests" check
+	// AND a per-sub-job CheckRun (Auth_FI_Tests, BGP_FI_Tests, etc.)
+	// posted via dfJenkinsGithubUser. Without this dedup, sub-jobs render
+	// twice — once expanded under FI Tests, once as standalone rows.
+	// gplm uses the same fi_job_names skip set for the same reason.
+	fiSubJobNames := make(map[string]bool)
+	for _, node := range lastCommit.Commit.StatusCheckRollup.Contexts.Nodes {
+		if node.Typename != "CheckRun" {
+			continue
+		}
+		if subJobs, _ := parseFITests(node.CheckRun); len(subJobs) > 0 {
+			for _, j := range subJobs {
+				fiSubJobNames[j.Name] = true
+			}
+		}
+	}
 
 	for _, node := range lastCommit.Commit.StatusCheckRollup.Contexts.Nodes {
 		var category CheckCategory
@@ -536,6 +559,12 @@ func (sidebar *Model) renderChecks() string {
 				}
 				continue
 			}
+			// Skip per-sub-job CheckRuns whose name we already rendered as
+			// part of the expanded FI Tests block (see fiSubJobNames pre-
+			// pass above).
+			if fiSubJobNames[string(checkRun.Name)] {
+				continue
+			}
 			var renderedStatus string
 			category, renderedStatus = sidebar.renderCheckRunConclusion(checkRun)
 			checkName = string(checkRun.Name)
@@ -544,6 +573,13 @@ func (sidebar *Model) renderChecks() string {
 			check = lipgloss.JoinHorizontal(lipgloss.Top, renderedStatus, " ", name)
 		case "StatusContext":
 			statusContext := node.StatusContext
+			// Skip the StatusContext duplicates of FI sub-jobs too.
+			// `gh pr checks` blends statuses with check-runs; without
+			// this filter every Auth_FI_Tests / BGP_FI_Tests etc. would
+			// also show up under its StatusContext form.
+			if fiSubJobNames[string(statusContext.Context)] {
+				continue
+			}
 			var status string
 			category, status = sidebar.renderStatusContextConclusion(statusContext)
 			checkName = string(statusContext.Context)
@@ -715,34 +751,114 @@ func (m *Model) getChecksStats() checksStats {
 	}
 
 	lastCommit := commits[0]
-	allChecks := make([]data.ContextCountByState, 0)
-	allChecks = append(
-		allChecks,
-		lastCommit.Commit.StatusCheckRollup.Contexts.CheckRunCountsByState...)
-	allChecks = append(
-		allChecks,
-		lastCommit.Commit.StatusCheckRollup.Contexts.StatusContextCountsByState...)
 
-	for _, count := range allChecks {
-		state := string(count.State)
-		if ghchecks.IsStatusWaiting(state) {
-			res.inProgress += int(count.Count)
-		} else if ghchecks.IsConclusionAFailure(state) {
-			res.failed += int(count.Count)
-		} else if ghchecks.IsConclusionASkip(state) {
-			res.skipped += int(count.Count)
-		} else if ghchecks.IsConclusionNeutral(state) {
-			res.neutral += int(count.Count)
-		} else if ghchecks.IsConclusionASuccess(state) {
-			res.succeeded += int(count.Count)
+	// Walk the actual node list (with the same dedup the renderer uses)
+	// rather than summing CheckRunCountsByState + StatusContextCountsByState.
+	// Those aggregates double-count when a check appears in both CheckRun
+	// and StatusContext form — exactly what Jenkins does for FI sub-jobs,
+	// which led to "2 failing" when only 1 had failed.
+	nodes := lastCommit.Commit.StatusCheckRollup.Contexts.Nodes
+
+	// Pre-pass: identify FI sub-jobs (mirrors the renderer's fiSubJobNames
+	// set). Their parent "FI Tests" CheckRun is dropped from counts since
+	// each sub-job is counted individually below.
+	fiSubJobNames := make(map[string]bool)
+	for _, node := range nodes {
+		if node.Typename != "CheckRun" {
+			continue
+		}
+		if subJobs, _ := parseFITests(node.CheckRun); len(subJobs) > 0 {
+			for _, j := range subJobs {
+				fiSubJobNames[j.Name] = true
+				switch j.Category {
+				case CheckFailure:
+					res.failed++
+				case CheckWaiting:
+					res.inProgress++
+				case CheckSuccess:
+					res.succeeded++
+				}
+			}
 		}
 	}
 
-	// Count check suites that don't appear in statusCheckRollup
+	// Main pass: dedup by check name (CheckRun and StatusContext can mirror
+	// each other for the same check) and skip both the FI Tests aggregate
+	// and per-sub-job duplicates.
+	seen := make(map[string]bool)
+	for _, node := range nodes {
+		var name, state string
+		switch node.Typename {
+		case "CheckRun":
+			cr := node.CheckRun
+			name = string(cr.Name)
+			if name == fiTestCheckName && len(fiSubJobNames) > 0 {
+				continue
+			}
+			if fiSubJobNames[name] {
+				continue
+			}
+			if seen[name] {
+				continue
+			}
+			if ghchecks.IsStatusWaiting(string(cr.Status)) {
+				state = string(cr.Status)
+			} else {
+				state = string(cr.Conclusion)
+			}
+		case "StatusContext":
+			sc := node.StatusContext
+			name = string(sc.Context)
+			if fiSubJobNames[name] {
+				continue
+			}
+			if seen[name] {
+				continue
+			}
+			state = string(sc.State)
+		default:
+			continue
+		}
+		seen[name] = true
+		switch {
+		case ghchecks.IsStatusWaiting(state):
+			res.inProgress++
+		case ghchecks.IsConclusionAFailure(state):
+			res.failed++
+		case ghchecks.IsConclusionASkip(state):
+			res.skipped++
+		case ghchecks.IsConclusionNeutral(state):
+			res.neutral++
+		case ghchecks.IsConclusionASuccess(state):
+			res.succeeded++
+		}
+	}
+
+	// Count check suites that don't appear in statusCheckRollup. A suite
+	// with a non-empty conclusion has FINISHED — even if its `status`
+	// field still says QUEUED/PENDING/WAITING (which happens when GitHub
+	// returns slightly inconsistent state after a workflow completes).
+	// Without the conclusion guard, post-completion suites get phantom-
+	// counted as "in progress" even though their CheckRuns already
+	// reported success/failure and were tallied in the main pass above.
 	for _, suite := range lastCommit.Commit.CheckSuites.Nodes {
 		if suite.Conclusion == "ACTION_REQUIRED" {
 			res.awaitingApproval++
-		} else if suite.Status == "QUEUED" || suite.Status == "PENDING" || suite.Status == "WAITING" {
+			continue
+		}
+		if suite.Conclusion != "" {
+			continue // suite is done; its CheckRuns were already counted
+		}
+		// Skip integration-subscription suites (Cursor, Figma, etc.) that
+		// register a CheckSuite per commit but never run checks. They sit
+		// at status=QUEUED forever with zero CheckRuns. GitHub's web UI
+		// hides them; we should too, otherwise the "in progress" stat is
+		// permanently inflated by the number of installed-but-passive
+		// GitHub Apps in the repo.
+		if suite.CheckRuns.TotalCount == 0 {
+			continue
+		}
+		if suite.Status == "QUEUED" || suite.Status == "PENDING" || suite.Status == "WAITING" {
 			res.inProgress++
 		}
 	}
