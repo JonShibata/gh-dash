@@ -96,9 +96,28 @@ type PullRequestData struct {
 	Files            ChangedFiles   `graphql:"files(first: 5)"`
 	IsDraft          bool
 	IsInMergeQueue   bool
+	// AutoMergeRequest is non-nil-shaped when `gh pr merge --auto` (or the
+	// web UI equivalent) has been set — but the PR may still be waiting on
+	// checks/approvals before the merge queue picks it up. Use the inner
+	// EnabledBy.Login as a presence signal: empty string ⇒ not enabled.
+	// (We don't use a pointer because shurcoolL-graphql doesn't round-trip
+	// nullable struct fields cleanly without a custom UnmarshalJSON.)
+	AutoMergeRequest struct {
+		EnabledBy struct {
+			Login string
+		}
+	} `graphql:"autoMergeRequest"`
 	Commits          Commits          `graphql:"commits(last: 1)"`
 	Labels           PRLabels         `graphql:"labels(first: 6)"`
 	MergeStateStatus MergeStateStatus `graphql:"mergeStateStatus"`
+}
+
+// HasAutoMerge reports whether auto-merge is enabled on this PR. Distinct
+// from IsInMergeQueue: auto-merge is the request, queue is the actual
+// pickup. A PR can be auto-merge-enabled without being queued yet
+// (waiting on checks/approvals); once queued, both are typically true.
+func (data PullRequestData) HasAutoMerge() bool {
+	return data.AutoMergeRequest.EnabledBy.Login != ""
 }
 
 type CheckRun struct {

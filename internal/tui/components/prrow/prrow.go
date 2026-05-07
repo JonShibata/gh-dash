@@ -81,6 +81,10 @@ func (pr *PullRequest) renderState() string {
 			return mergeCellStyle.Foreground(pr.Ctx.Theme.WarningText).
 				Render(constants.MergeQueueIcon)
 		}
+		if pr.Data.Primary.HasAutoMerge() {
+			return mergeCellStyle.Foreground(pr.Ctx.Theme.WarningText).
+				Render(constants.MergeQueueIcon)
+		}
 		if pr.Data.Primary.IsDraft {
 			return mergeCellStyle.Foreground(pr.Ctx.Theme.FaintText).Render(constants.DraftIcon)
 		} else {
@@ -356,6 +360,9 @@ func (pr *PullRequest) RenderState() string {
 	case "OPEN":
 		if pr.Data.Primary.IsInMergeQueue {
 			return constants.MergeQueueIcon + " Queued"
+		}
+		if pr.Data.Primary.HasAutoMerge() {
+			return constants.MergeQueueIcon + " Auto"
 		}
 		if pr.Data.Primary.IsDraft {
 			return constants.DraftIcon + " Draft"
