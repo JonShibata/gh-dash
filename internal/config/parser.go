@@ -195,6 +195,11 @@ type Defaults struct {
 	Layout                 LayoutConfig  `yaml:"layout,omitempty"`
 	RefetchIntervalMinutes int           `yaml:"refetchIntervalMinutes,omitempty"`
 	DateFormat             string        `yaml:"dateFormat,omitempty"`
+	// HideAuthors is a list of GitHub logins whose comments and reviews are
+	// suppressed in the activity tab. Use for noisy bot accounts (e.g. CI
+	// bots that post per-build status comments) so the human conversation
+	// stands out. Matched case-sensitively against the author's login.
+	HideAuthors []string `yaml:"hideAuthors,omitempty"`
 }
 
 type RepoConfig struct {

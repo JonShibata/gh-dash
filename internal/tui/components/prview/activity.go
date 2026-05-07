@@ -31,10 +31,28 @@ func (m *Model) renderActivity() string {
 		return bodyStyle.Render("Loading...")
 	}
 
+	// Build a hidden-author lookup once. Empty when not configured, in
+	// which case isHidden is a constant-false closure and the filter is a
+	// no-op — no per-comment map allocation or lookup overhead.
+	hidden := make(map[string]struct{}, len(m.ctx.Config.Defaults.HideAuthors))
+	for _, login := range m.ctx.Config.Defaults.HideAuthors {
+		hidden[login] = struct{}{}
+	}
+	isHidden := func(login string) bool {
+		if len(hidden) == 0 {
+			return false
+		}
+		_, ok := hidden[login]
+		return ok
+	}
+
 	for _, review := range m.pr.Data.Enriched.ReviewThreads.Nodes {
 		path := review.Path
 		line := review.Line
 		for _, c := range review.Comments.Nodes {
+			if isHidden(c.Author.Login) {
+				continue
+			}
 			comments = append(comments, comment{
 				Author:    c.Author.Login,
 				Body:      c.Body,
@@ -46,6 +64,9 @@ func (m *Model) renderActivity() string {
 	}
 
 	for _, c := range m.pr.Data.Enriched.Comments.Nodes {
+		if isHidden(c.Author.Login) {
+			continue
+		}
 		comments = append(comments, comment{
 			Author:    c.Author.Login,
 			Body:      c.Body,
@@ -65,6 +86,9 @@ func (m *Model) renderActivity() string {
 	}
 
 	for _, review := range m.pr.Data.Primary.Reviews.Nodes {
+		if isHidden(review.Author.Login) {
+			continue
+		}
 		renderedReview, err := m.renderReview(review, markdownRenderer)
 		if err != nil {
 			continue
