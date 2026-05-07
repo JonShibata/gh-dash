@@ -200,6 +200,25 @@ type Defaults struct {
 	// bots that post per-build status comments) so the human conversation
 	// stands out. Matched case-sensitively against the author's login.
 	HideAuthors []string `yaml:"hideAuthors,omitempty"`
+	// Extensions is fork-local integration with non-GitHub systems. Empty
+	// in upstream gh-dash; populated by the JonShibata fork to wire keys
+	// like Shift+J to a Jenkins-direct CI rerun.
+	Extensions ExtensionsConfig `yaml:"extensions,omitempty"`
+}
+
+// ExtensionsConfig groups optional integrations with services beyond GitHub.
+// Any sub-struct with an empty primary field (e.g. Jenkins.URL == "")
+// disables that integration entirely — its keybindings become no-ops.
+type ExtensionsConfig struct {
+	Jenkins JenkinsConfig `yaml:"jenkins,omitempty"`
+}
+
+// JenkinsConfig configures direct Jenkins job triggers (no PR comment).
+// Auth is via ~/.netrc — entry must list `machine <host of URL>` with the
+// user's Jenkins API token as the password. URL must NOT include a path.
+type JenkinsConfig struct {
+	URL string `yaml:"url,omitempty"` // e.g. https://jenkins.deepfield.net
+	Job string `yaml:"job,omitempty"` // e.g. gha_fi_test_manager
 }
 
 type RepoConfig struct {

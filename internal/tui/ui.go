@@ -455,6 +455,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 
+			case key.Matches(msg, keys.PRKeys.JenkinsRerun):
+				// Silent no-op when Jenkins extension not configured.
+				// Hiding from help dynamically would need per-row mutation
+				// of the binding; not worth it for a fork-only feature.
+				if currRowData != nil && m.ctx.Config.Defaults.Extensions.Jenkins.URL != "" {
+					cmd = m.promptConfirmation(currSection, "jenkinsRerun")
+				}
+				return m, cmd
+
 			case key.Matches(msg, keys.PRKeys.ViewIssues):
 				cmds = append(cmds, m.switchSelectedView())
 

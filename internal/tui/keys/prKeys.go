@@ -31,6 +31,7 @@ type PRKeyMap struct {
 	ViewIssues           key.Binding
 	OpenFirstFailed      key.Binding
 	RerunFailedChecks    key.Binding
+	JenkinsRerun         key.Binding
 }
 
 var PRKeys = PRKeyMap{
@@ -118,6 +119,10 @@ var PRKeys = PRKeyMap{
 		key.WithKeys("f"),
 		key.WithHelp("f", "rerun failed checks"),
 	),
+	JenkinsRerun: key.NewBinding(
+		key.WithKeys("J"),
+		key.WithHelp("J", "trigger Jenkins rerun"),
+	),
 }
 
 func PRFullHelp() []key.Binding {
@@ -142,6 +147,7 @@ func PRFullHelp() []key.Binding {
 		PRKeys.ViewIssues,
 		PRKeys.OpenFirstFailed,
 		PRKeys.RerunFailedChecks,
+		PRKeys.JenkinsRerun,
 	}
 }
 
@@ -212,6 +218,8 @@ func rebindPRKeys(keys []config.Keybinding) error {
 			key = &PRKeys.OpenFirstFailed
 		case "rerunFailedChecks":
 			key = &PRKeys.RerunFailedChecks
+		case "jenkinsRerun":
+			key = &PRKeys.JenkinsRerun
 		default:
 			return fmt.Errorf("unknown built-in pr key: '%s'", prKey.Builtin)
 		}

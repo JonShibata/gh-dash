@@ -544,3 +544,88 @@ func RerunFailedChecksOnPR(
 		}
 	})
 }
+
+// TriggerJenkinsRerun POSTs to a configured Jenkins job (typically
+// Deepfield's gha_fi_test_manager) to re-run FI tests directly, bypassing
+// the GitHub Actions → proxy → Jenkins chain. No PR comment is created.
+//
+// Why a fork-only feature: gh-dash users at large don't run a private
+// Jenkins; only this fork does. Hence config-gated by extensions.jenkins
+// — when URL is empty the keypress is a no-op.
+//
+// Auth: ~/.netrc entry for the Jenkins host. We shell out to `curl -n`
+// because Go's stdlib has no netrc support and reimplementing it is more
+// risk than the convenience saves.
+func TriggerJenkinsRerun(
+	ctx *context.ProgramContext,
+	section SectionIdentifier,
+	pr data.RowData,
+) tea.Cmd {
+	prNumber := pr.GetNumber()
+	repo := pr.GetRepoNameWithOwner()
+	jcfg := ctx.Config.Defaults.Extensions.Jenkins
+	taskId := buildTaskId("pr_jenkins_rerun", prNumber)
+	task := context.Task{
+		Id:           taskId,
+		StartText:    fmt.Sprintf("Triggering Jenkins job %s for PR #%d", jcfg.Job, prNumber),
+		FinishedText: fmt.Sprintf("Jenkins job queued for PR #%d", prNumber),
+		State:        context.TaskStart,
+		Error:        nil,
+	}
+	startCmd := ctx.StartTask(task)
+	return tea.Batch(startCmd, func() tea.Msg {
+		if jcfg.URL == "" || jcfg.Job == "" {
+			return constants.TaskFinishedMsg{
+				TaskId:      taskId,
+				SectionId:   section.Id,
+				SectionType: section.Type,
+				Err:         fmt.Errorf("jenkins extension not configured (set extensions.jenkins.url and .job)"),
+			}
+		}
+		// Two-step pipeline: fetch CSRF crumb, then POST. Bash + curl
+		// here because curl's -n flag handles netrc auth without bringing
+		// netrc parsing into Go.
+		owner, name := splitOwnerRepo(repo)
+		script := fmt.Sprintf(
+			`set -euo pipefail; `+
+				`crumb=$(curl -fsS -n %[1]s/crumbIssuer/api/json | jq -r '.crumb // empty'); `+
+				`[ -n "$crumb" ] || { echo "no crumb (check ~/.netrc for %[1]s)" >&2; exit 1; }; `+
+				`meta=$(gh pr view %[2]d -R %[3]s --json headRefOid,headRefName,baseRefName,number,url,title); `+
+				`sha=$(echo "$meta" | jq -r .headRefOid); `+
+				`head=$(echo "$meta" | jq -r .headRefName); `+
+				`base=$(echo "$meta" | jq -r .baseRefName); `+
+				`curl -fsS -n -X POST -H "Jenkins-Crumb: $crumb" `+
+				`--data-urlencode "PIPEDREAM_SHA=$sha" `+
+				`--data-urlencode "PIPEDREAM_BRANCH=$head" `+
+				`--data-urlencode "PIPEDREAM_TARGET_BRANCH=$base" `+
+				`--data-urlencode "REPO_OWNER=%[4]s" `+
+				`--data-urlencode "REPO_NAME=%[5]s" `+
+				`--data-urlencode "EVENT_NAME=manual.gh-dash" `+
+				`%[1]s/job/%[6]s/buildWithParameters >/dev/null`,
+			jcfg.URL, prNumber, repo, owner, name, jcfg.Job,
+		)
+		log.Info("Triggering Jenkins rerun", "pr", prNumber, "url", jcfg.URL, "job", jcfg.Job)
+		c := exec.Command("bash", "-c", script)
+		err := c.Run()
+		return constants.TaskFinishedMsg{
+			TaskId:      taskId,
+			SectionId:   section.Id,
+			SectionType: section.Type,
+			Err:         err,
+			Msg:         UpdatePRMsg{PrNumber: prNumber},
+		}
+	})
+}
+
+// splitOwnerRepo splits "owner/repo" into its two halves. Returns
+// (owner, name); if no slash is present, both fall back to the whole
+// string and the input as the owner — Jenkins POST then errors out
+// with "missing repo", which is fine.
+func splitOwnerRepo(s string) (string, string) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '/' {
+			return s[:i], s[i+1:]
+		}
+	}
+	return s, s
+}

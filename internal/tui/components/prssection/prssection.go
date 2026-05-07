@@ -107,6 +107,8 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 						cmd = tasks.ApproveWorkflows(m.Ctx, sid, pr)
 					case "rerunFailedChecks":
 						cmd = tasks.RerunFailedChecksOnPR(m.Ctx, sid, pr)
+					case "jenkinsRerun":
+						cmd = tasks.TriggerJenkinsRerun(m.Ctx, sid, pr)
 					}
 				}
 
