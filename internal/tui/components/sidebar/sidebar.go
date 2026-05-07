@@ -13,7 +13,11 @@ import (
 )
 
 type Model struct {
-	IsOpen     bool
+	IsOpen bool
+	// Fullscreen renders the sidebar bare (no border, full screen) so the
+	// preview can replace the section list entirely. Set by the parent on
+	// Enter, cleared on Esc.
+	Fullscreen bool
 	data       string
 	viewport   viewport.Model
 	ctx        *context.ProgramContext
@@ -44,6 +48,22 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 		case key.Matches(msg, keys.Keys.PageUp):
 			m.viewport.HalfPageUp()
+
+		// Up/Down/g/G are list-navigation keys in split mode (move the PR
+		// cursor). Only treat them as preview-scroll keys when fullscreen,
+		// otherwise the unconditional sidebar.Update at ui.go:949 would
+		// hijack them whenever the preview pane is open.
+		case m.Fullscreen && key.Matches(msg, keys.Keys.Down):
+			m.viewport.ScrollDown(1)
+
+		case m.Fullscreen && key.Matches(msg, keys.Keys.Up):
+			m.viewport.ScrollUp(1)
+
+		case m.Fullscreen && key.Matches(msg, keys.Keys.FirstLine):
+			m.viewport.GotoTop()
+
+		case m.Fullscreen && key.Matches(msg, keys.Keys.LastLine):
+			m.viewport.GotoBottom()
 		}
 	}
 
@@ -53,6 +73,23 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 func (m Model) View() string {
 	if !m.IsOpen {
 		return ""
+	}
+
+	if m.Fullscreen {
+		height := m.ctx.MainContentHeight
+		width := m.ctx.ScreenWidth
+		style := lipgloss.NewStyle().Height(height).Width(width).MaxWidth(width)
+		if m.data == "" {
+			return style.Align(lipgloss.Center).Render(
+				lipgloss.PlaceVertical(height, lipgloss.Center, m.emptyState),
+			)
+		}
+		return style.Render(lipgloss.JoinVertical(
+			lipgloss.Top,
+			m.viewport.View(),
+			m.ctx.Styles.Sidebar.PagerStyle.
+				Render(fmt.Sprintf("%d%%", int(m.viewport.ScrollPercent()*100))),
+		))
 	}
 
 	if m.ctx.PreviewPosition == "bottom" {
@@ -107,6 +144,9 @@ func (m *Model) GetSidebarContentWidth() int {
 	if m.ctx == nil || m.ctx.Config == nil {
 		return 0
 	}
+	if m.Fullscreen {
+		return max(0, m.ctx.ScreenWidth)
+	}
 	if m.ctx.PreviewPosition == "bottom" {
 		return max(0, m.ctx.DynamicPreviewWidth)
 	}
@@ -136,7 +176,9 @@ func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {
 		return
 	}
 	m.ctx = ctx
-	if m.ctx.PreviewPosition == "bottom" {
+	if m.Fullscreen {
+		m.viewport.SetHeight(m.ctx.MainContentHeight - m.ctx.Styles.Sidebar.PagerHeight)
+	} else if m.ctx.PreviewPosition == "bottom" {
 		m.viewport.SetHeight(m.ctx.DynamicPreviewHeight - m.ctx.Styles.Sidebar.PagerHeight)
 	} else {
 		m.viewport.SetHeight(m.ctx.MainContentHeight - m.ctx.Styles.Sidebar.PagerHeight)

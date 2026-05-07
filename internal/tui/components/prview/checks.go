@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/compat"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
 	ghchecks "github.com/dlvhdr/x/gh-checks"
@@ -370,16 +369,6 @@ const (
 	CheckSuccess
 )
 
-// collapseRow renders a single dim summary line used by tiered compaction
-// when the full per-check listing wouldn't fit. Format: "<glyph>  N
-// <label>" — e.g. "✓  12 passed" or "●  4 in progress" — colored by the
-// status it represents so a glance at the row still conveys the state.
-func collapseRow(sidebar *Model, glyph, label string, c compat.AdaptiveColor) string {
-	return lipgloss.NewStyle().
-		Foreground(c).
-		Render(glyph + "  " + label)
-}
-
 // renderCheckBadge returns a solid-background pill for a check status, e.g.
 // " ✓ PASS ", " ✗ FAIL ", " ● PEND ". Heavier visual weight than a plain
 // glyph so failures and pending counts pop in a busy checks list.
@@ -504,6 +493,11 @@ func (sidebar *Model) renderChecks() string {
 
 	// Build a set of reported check names to compare against required checks
 	reportedChecks := make(map[string]bool)
+	// Dedup by check name within this render pass. CheckRun and StatusContext
+	// can mirror each other for the same check (Jenkins does this routinely),
+	// which would otherwise render the same row twice. Mirrors the `seen` map
+	// in getChecksStats.
+	seen := make(map[string]bool)
 
 	// Pre-pass: collect FI sub-job names from any "FI Tests" check-run.
 	// gha_fi_test_manager publishes both an aggregate "FI Tests" check
@@ -592,6 +586,12 @@ func (sidebar *Model) renderChecks() string {
 			)
 		}
 
+		if checkName != "" {
+			if seen[checkName] {
+				continue
+			}
+			seen[checkName] = true
+		}
 		reportedChecks[checkName] = true
 
 		switch category {
@@ -642,36 +642,6 @@ func (sidebar *Model) renderChecks() string {
 				Width(sidebar.getIndentedContentWidth()).
 				Render("No checks to display..."),
 		)
-	}
-
-	// Tiered compaction. When the full list would overflow the available
-	// preview height, collapse non-essential rows into one-line summaries
-	// in two stages: passing first (lowest-signal), then waiting/in-
-	// progress. Failures and awaiting-approval entries are always shown
-	// in full — those are exactly what the user came to the checks tab
-	// for. The pending section (required-but-not-reported workflows) also
-	// stays full because it's small and meaningful.
-	avail := sidebar.ctx.MainContentHeight - 4 // chrome: title + box border + section header
-	if avail > 0 {
-		predict := func() int {
-			n := 0
-			if len(awaitingApproval) > 0 {
-				n += 2 + len(awaitingApproval)
-			}
-			if len(pending) > 0 {
-				n += 2 + len(pending)
-			}
-			n += len(failures) + len(waiting) + len(rest)
-			return n
-		}
-		if predict() > avail && len(rest) > 0 {
-			passCount := len(rest)
-			rest = []string{collapseRow(sidebar, "✓", fmt.Sprintf("%d passed", passCount), sidebar.ctx.Theme.SuccessText)}
-		}
-		if predict() > avail && len(waiting) > 0 {
-			waitCount := len(waiting)
-			waiting = []string{collapseRow(sidebar, "●", fmt.Sprintf("%d in progress", waitCount), sidebar.ctx.Theme.WarningText)}
-		}
 	}
 
 	parts := make([]string, 0)
