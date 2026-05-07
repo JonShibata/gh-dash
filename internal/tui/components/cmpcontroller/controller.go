@@ -28,6 +28,12 @@ const (
 	ModeUnassign
 	ModeLabel
 	ModeSearch
+	// ModeReplyReview is a Comment-shaped mode dedicated to replies on
+	// inline review threads. We need a distinct mode (rather than reusing
+	// ModeComment) because the submit handler in prview routes to
+	// tasks.ReplyToReviewComment instead of tasks.CommentOnPR — the
+	// REST endpoint and target id are different.
+	ModeReplyReview
 )
 
 type SuggestionKind int
@@ -248,7 +254,8 @@ func (c *Controller) Update(msg tea.Msg) (tea.Cmd, bool) {
 		c.repoUsers = msg.Users
 		c.cmp.SetSuggestions(userSuggestions(msg.Users))
 		cmds = append(cmds, c.cmp.SetFetchSuccess())
-		if c.mode == ModeComment || c.mode == ModeApprove || c.mode == ModeAssign {
+		if c.mode == ModeComment || c.mode == ModeApprove || c.mode == ModeAssign ||
+			c.mode == ModeReplyReview {
 			c.showSuggestionsFromCurrentContext()
 		}
 		return tea.Batch(cmds...), true
@@ -405,7 +412,7 @@ func (c Controller) showSuggestionsFromCurrentContext() {
 
 func (c Controller) usesAutocomplete() bool {
 	switch c.mode {
-	case ModeComment, ModeApprove, ModeAssign, ModeLabel:
+	case ModeComment, ModeApprove, ModeAssign, ModeLabel, ModeReplyReview:
 		return true
 	default:
 		return false

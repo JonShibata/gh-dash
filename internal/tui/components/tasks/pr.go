@@ -617,6 +617,44 @@ func TriggerJenkinsRerun(
 	})
 }
 
+// ReplyToReviewComment posts a reply under an existing inline review
+// comment, using the v3 REST endpoint
+// `/repos/{o}/{r}/pulls/{n}/comments/{cid}/replies`. There is no `gh pr`
+// subcommand for this — only `gh api` — so we shell out the same way
+// CommentOnPR does for top-level comments.
+//
+// commentDatabaseId is the integer REST id of the *root* thread comment
+// (or any prior comment in the thread; GitHub re-anchors to the root).
+// We don't post a UpdatePRMsg.NewComment back because the activity
+// renderer pulls from the enriched ReviewThreads tree on the next refresh
+// — synthesizing a reply node here would require knowing the thread
+// index, which the task layer doesn't have.
+func ReplyToReviewComment(
+	ctx *context.ProgramContext,
+	section SectionIdentifier,
+	pr data.RowData,
+	commentDatabaseId int,
+	body string,
+) tea.Cmd {
+	prNumber := pr.GetNumber()
+	repo := pr.GetRepoNameWithOwner()
+	return fireTask(ctx, GitHubTask{
+		Id: buildTaskId("pr_reply_review", prNumber),
+		Args: []string{
+			"api",
+			"-X", "POST",
+			fmt.Sprintf("repos/%s/pulls/%d/comments/%d/replies", repo, prNumber, commentDatabaseId),
+			"-f", "body=" + body,
+		},
+		Section:      section,
+		StartText:    fmt.Sprintf("Replying to review comment on PR #%d", prNumber),
+		FinishedText: fmt.Sprintf("Replied to review comment on PR #%d", prNumber),
+		Msg: func(c *exec.Cmd, err error) tea.Msg {
+			return UpdatePRMsg{PrNumber: prNumber}
+		},
+	})
+}
+
 // splitOwnerRepo splits "owner/repo" into its two halves. Returns
 // (owner, name); if no slash is present, both fall back to the whole
 // string and the input as the owner — Jenkins POST then errors out

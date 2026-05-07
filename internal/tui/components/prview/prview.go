@@ -40,6 +40,11 @@ type Model struct {
 	carousel        carousel.Model
 	editor          cmpcontroller.Controller
 	summaryViewMore bool
+	// replyTargetCommentId is the REST databaseId of the root comment of
+	// the thread the user is currently replying to. Set by
+	// SetIsReplyingToReview when the editor opens; consumed by Update on
+	// submit. Zero when no reply is in flight.
+	replyTargetCommentId int
 }
 
 var tabs = []string{" Overview", " Activity", " Commits", " Checks", " Files Changed"}
@@ -105,6 +110,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				return m, m.label(labels)
 			}
 			return m, nil
+
+		case cmpcontroller.ModeReplyReview:
+			target := m.replyTargetCommentId
+			m.replyTargetCommentId = 0
+			if target == 0 || len(strings.TrimSpace(value)) == 0 {
+				return m, nil
+			}
+			return m, tasks.ReplyToReviewComment(m.ctx, sid, m.pr.Data.Primary, target, value)
 		}
 	}
 
@@ -805,6 +818,77 @@ func (m *Model) SetIsLabeling(isLabeling bool) tea.Cmd {
 		ConfirmDiscardOnCancel:           false,
 	})
 	return cmd
+}
+
+// GetIsReplyingToReview reports whether the editor is currently open in
+// review-thread reply mode. Mirrors the GetIsCommenting/GetIsLabeling
+// shape so the UI layer can probe focus state uniformly.
+func (m *Model) GetIsReplyingToReview() bool {
+	return m.editor.Mode() == cmpcontroller.ModeReplyReview
+}
+
+// SetIsReplyingToReview opens (or closes) the inline editor for replying
+// to the most recent unresolved review thread on this PR. v1 picks the
+// target automatically — there is no thread cursor yet — so the keypress
+// becomes a no-op when there are no unresolved threads.
+//
+// The target comment id is stashed on the Model and consumed by Update
+// on Ctrl+D submit. We don't pass it through EnterOptions because the
+// cmpcontroller layer is shared with the issue view and doesn't carry
+// per-feature payloads.
+func (m *Model) SetIsReplyingToReview(isReplying bool) tea.Cmd {
+	if m.pr == nil {
+		return nil
+	}
+
+	if !isReplying {
+		if m.editor.Mode() == cmpcontroller.ModeReplyReview {
+			m.editor.Exit()
+		}
+		m.replyTargetCommentId = 0
+		return nil
+	}
+
+	target := m.pickReplyTarget()
+	if target == 0 {
+		return nil
+	}
+	m.replyTargetCommentId = target
+
+	cmd := m.editor.Enter(cmpcontroller.EnterOptions{
+		Mode:                             cmpcontroller.ModeReplyReview,
+		Prompt:                           constants.ReplyPrompt,
+		Source:                           cmp.UserMentionSource{},
+		Repo:                             m.repoRef(),
+		SuggestionKind:                   cmpcontroller.SuggestionUsers,
+		EnterFetch:                       cmpcontroller.FetchSilent,
+		ConfirmDiscardOnCancel:           true,
+		HideAutocompleteWhenContextEmpty: true,
+	})
+	return cmd
+}
+
+// pickReplyTarget returns the REST databaseId of the most recently
+// updated unresolved thread's root comment, or 0 if no eligible thread
+// exists. v1 heuristic: walk threads in reverse (GraphQL returns oldest
+// first under `last: 50`, so the tail is most recent), skip resolved
+// ones, and take the first comment of that thread as the root.
+func (m *Model) pickReplyTarget() int {
+	if m.pr == nil || !m.pr.Data.IsEnriched {
+		return 0
+	}
+	threads := m.pr.Data.Enriched.ReviewThreads.Nodes
+	for i := len(threads) - 1; i >= 0; i-- {
+		t := threads[i]
+		if t.IsResolved {
+			continue
+		}
+		if len(t.Comments.Nodes) == 0 {
+			continue
+		}
+		return t.Comments.Nodes[0].DatabaseId
+	}
+	return 0
 }
 
 func (m *Model) repoRef() cmpcontroller.RepoRef {

@@ -32,6 +32,7 @@ type PRKeyMap struct {
 	OpenFirstFailed      key.Binding
 	RerunFailedChecks    key.Binding
 	JenkinsRerun         key.Binding
+	ReviewThreadReply    key.Binding
 }
 
 var PRKeys = PRKeyMap{
@@ -123,6 +124,13 @@ var PRKeys = PRKeyMap{
 		key.WithKeys("J"),
 		key.WithHelp("J", "trigger Jenkins rerun"),
 	),
+	// Capital R because lowercase r is universally "refresh" across gh-dash.
+	// v1 replies to the most-recent unresolved thread; a thread cursor is
+	// a follow-up.
+	ReviewThreadReply: key.NewBinding(
+		key.WithKeys("R"),
+		key.WithHelp("R", "reply to last review thread"),
+	),
 }
 
 func PRFullHelp() []key.Binding {
@@ -148,6 +156,7 @@ func PRFullHelp() []key.Binding {
 		PRKeys.OpenFirstFailed,
 		PRKeys.RerunFailedChecks,
 		PRKeys.JenkinsRerun,
+		PRKeys.ReviewThreadReply,
 	}
 }
 
@@ -220,6 +229,8 @@ func rebindPRKeys(keys []config.Keybinding) error {
 			key = &PRKeys.RerunFailedChecks
 		case "jenkinsRerun":
 			key = &PRKeys.JenkinsRerun
+		case "reviewThreadReply":
+			key = &PRKeys.ReviewThreadReply
 		default:
 			return fmt.Errorf("unknown built-in pr key: '%s'", prKey.Builtin)
 		}

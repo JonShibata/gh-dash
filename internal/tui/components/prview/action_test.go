@@ -249,3 +249,53 @@ func TestSetIsLabelingWithNilPR(t *testing.T) {
 
 	require.Nil(t, cmd, "expected nil command when PR is nil")
 }
+
+// SetIsReplyingToReview must be a no-op when there is no eligible thread,
+// so the keypress doesn't open an empty editor with no submit target.
+func TestSetIsReplyingToReviewNoThreadsIsNoOp(t *testing.T) {
+	m := newTestModelForAction(t)
+	cmd := m.SetIsReplyingToReview(true)
+	require.Nil(t, cmd, "expected nil cmd when there are no review threads")
+	require.False(t, m.GetIsReplyingToReview(), "editor should not enter reply mode without a target")
+}
+
+// pickReplyTarget returns the *most recent unresolved* thread's first
+// comment id, skipping resolved threads even when they are newer.
+func TestPickReplyTargetSkipsResolvedThreads(t *testing.T) {
+	m := newTestModelForAction(t)
+	enriched := data.EnrichedPullRequestData{}
+	mkThread := func(id int, resolved bool) struct {
+		Id           string
+		IsOutdated   bool
+		IsResolved   bool
+		OriginalLine int
+		StartLine    int
+		Line         int
+		Path         string
+		Comments     data.ReviewComments `graphql:"comments(first: 20)"`
+	} {
+		return struct {
+			Id           string
+			IsOutdated   bool
+			IsResolved   bool
+			OriginalLine int
+			StartLine    int
+			Line         int
+			Path         string
+			Comments     data.ReviewComments `graphql:"comments(first: 20)"`
+		}{
+			IsResolved: resolved,
+			Comments: data.ReviewComments{Nodes: []data.ReviewComment{
+				{DatabaseId: id},
+			}},
+		}
+	}
+	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
+		mkThread(111, false), // older unresolved
+		mkThread(222, true),  // newer but resolved → skipped
+	)
+	m.pr.Data.Enriched = enriched
+	m.pr.Data.IsEnriched = true
+
+	require.Equal(t, 111, m.pickReplyTarget())
+}

@@ -295,6 +295,23 @@ type ReviewComment struct {
 	Author struct {
 		Login string
 	}
+	// DatabaseId is the REST-API integer id (a.k.a. PullRequestReviewComment.id
+	// in the v3 API). The reply endpoint
+	// `/repos/{o}/{r}/pulls/{n}/comments/{cid}/replies` requires this id —
+	// the GraphQL node id won't work — so we surface it explicitly rather
+	// than parsing it back out of `Url`.
+	DatabaseId int
+	// ReplyTo is non-nil-shaped only on replies; root thread comments leave
+	// the inner DatabaseId at zero. We keep it as an inline struct (not a
+	// pointer) because shurcoolL-graphql doesn't round-trip nullable
+	// embedded structs cleanly — zero means "this is the root".
+	ReplyTo struct {
+		DatabaseId int
+	}
+	// DiffHunk is the patch fragment GitHub stores per inline comment so the
+	// thread can render with code context even when the file changes later.
+	// Fetched on every comment but rendered only above the thread root.
+	DiffHunk  string
 	Body      string
 	UpdatedAt time.Time
 	StartLine int
@@ -332,6 +349,7 @@ type ReviewThreadsWithComments struct {
 	Nodes []struct {
 		Id           string
 		IsOutdated   bool
+		IsResolved   bool
 		OriginalLine int
 		StartLine    int
 		Line         int

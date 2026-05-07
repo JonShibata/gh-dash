@@ -10,6 +10,24 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/context"
 )
 
+func TestReplyToReviewComment_TaskConfiguration(t *testing.T) {
+	var capturedTask context.Task
+	ctx := &context.ProgramContext{
+		StartTask: func(task context.Task) tea.Cmd {
+			capturedTask = task
+			return nil
+		},
+	}
+	section := SectionIdentifier{Id: 7, Type: "pr"}
+	pr := mockIssue{number: 99, repoName: "owner/repo"}
+
+	cmd := ReplyToReviewComment(ctx, section, pr, 12345, "thanks for the review")
+	require.NotNil(t, cmd)
+	require.Equal(t, "pr_reply_review_99", capturedTask.Id)
+	require.Contains(t, capturedTask.StartText, "#99")
+	require.Contains(t, capturedTask.FinishedText, "#99")
+}
+
 func TestApproveWorkflows_TaskConfiguration(t *testing.T) {
 	var capturedTask context.Task
 

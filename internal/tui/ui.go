@@ -413,6 +413,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, keys.PRKeys.Comment):
 				return m, m.openSidebarForPRInput(m.prView.SetIsCommenting)
 
+			case key.Matches(msg, keys.PRKeys.ReviewThreadReply):
+				return m, m.openSidebarForPRInput(m.prView.SetIsReplyingToReview)
+
 			case key.Matches(msg, keys.PRKeys.Close):
 				if currRowData != nil {
 					cmd = m.promptConfirmation(currSection, "close")
@@ -550,6 +553,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 						case prview.PRActionComment:
 							return m, m.openSidebarForPRInput(m.prView.SetIsCommenting)
+
+						case prview.PRActionReviewThreadReply:
+							return m, m.openSidebarForPRInput(m.prView.SetIsReplyingToReview)
 
 						case prview.PRActionDiff:
 							if pr := m.notificationView.GetSubjectPR(); pr != nil {
