@@ -26,6 +26,10 @@ type Task struct {
 	Error        error
 	StartTime    time.Time
 	FinishedTime *time.Time
+	// Silent suppresses footer/status display for this task. Used by
+	// background auto-refresh fetches so the list re-fetch every N
+	// seconds doesn't flash "Fetching PRs..." in the status bar.
+	Silent bool
 }
 
 type ProgramContext struct {

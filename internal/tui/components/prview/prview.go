@@ -596,6 +596,30 @@ func (m *Model) EnrichCurrRow() tea.Cmd {
 	}
 }
 
+// RefreshEnrichedCurrRow re-fetches the enriched payload (checks,
+// reviews, comments, etc.) for the currently-viewed PR even when it's
+// already enriched. Used by the auto-tick so the sidebar stays current
+// while the user watches a build. Crucially, IsEnriched is NOT flipped
+// to false beforehand — that would blank the sidebar to "Loading..."
+// every tick. Instead the EnrichedPrMsg handler swaps the payload in
+// place when the fetch returns; the user sees old data → new data with
+// no "Loading..." intermediate state.
+func (m *Model) RefreshEnrichedCurrRow() tea.Cmd {
+	if m == nil || m.pr == nil {
+		return nil
+	}
+	url := m.pr.Data.Primary.Url
+	return func() tea.Msg {
+		d, err := data.FetchPullRequest(url)
+		return EnrichedPrMsg{
+			Id:   m.sectionId,
+			Type: prssection.SectionType,
+			Data: d,
+			Err:  err,
+		}
+	}
+}
+
 func (m *Model) SetWidth(width int) {
 	m.width = width
 	m.carousel.SetWidth(width)

@@ -26,6 +26,12 @@ const SectionType = "pr"
 type Model struct {
 	section.BaseModel
 	Prs []prrow.Data
+	// SilentNextFetch marks the next FetchNextPageSectionRows call as
+	// background — the resulting context.Task gets Silent=true so the
+	// status footer doesn't flash "Fetching PRs..." on every auto-tick.
+	// Cleared once the task is created so subsequent user-initiated
+	// fetches show normally.
+	SilentNextFetch bool
 }
 
 func NewModel(
@@ -205,6 +211,23 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			if m.PageInfo != nil {
 				m.Prs = append(m.Prs, msg.Prs...)
 			} else {
+				// Index the previous PRs by number so we can carry the
+				// enriched payload forward when the same PR shows up in
+				// the new page. Without this, every soft refresh resets
+				// the sidebar's checks/reviews/activity to "Loading..."
+				// because the freshly-fetched row has IsEnriched=false.
+				prev := make(map[int]prrow.Data, len(m.Prs))
+				for _, p := range m.Prs {
+					if p.IsEnriched {
+						prev[p.GetNumber()] = p
+					}
+				}
+				for i, p := range msg.Prs {
+					if old, ok := prev[p.GetNumber()]; ok {
+						msg.Prs[i].IsEnriched = true
+						msg.Prs[i].Enriched = old.Enriched
+					}
+				}
 				m.Prs = msg.Prs
 			}
 			m.TotalCount = msg.TotalCount
@@ -467,6 +490,8 @@ func (m *Model) FetchNextPageSectionRows() []tea.Cmd {
 	taskId := fmt.Sprintf("fetching_prs_%d_%s", m.Id, startCursor)
 	isFirstFetch := m.LastFetchTaskId == ""
 	m.LastFetchTaskId = taskId
+	silent := m.SilentNextFetch
+	m.SilentNextFetch = false
 	task := context.Task{
 		Id:        taskId,
 		StartText: fmt.Sprintf(`Fetching PRs for "%s"`, m.Config.Title),
@@ -474,8 +499,9 @@ func (m *Model) FetchNextPageSectionRows() []tea.Cmd {
 			`PRs for "%s" have been fetched`,
 			m.Config.Title,
 		),
-		State: context.TaskStart,
-		Error: nil,
+		State:  context.TaskStart,
+		Error:  nil,
+		Silent: silent,
 	}
 	startCmd := m.Ctx.StartTask(task)
 	cmds = append(cmds, startCmd)
@@ -529,15 +555,16 @@ func (m *Model) ResetRows() {
 }
 
 // SoftReset prepares the section for a re-fetch without blanking the
-// visible PR list. PageInfo and the last fetch task ID are cleared so
-// the next fetch is treated as a "first page" — its result will REPLACE
-// m.Prs atomically (see line ~205 in this file) instead of appending.
-// Existing rows stay rendered until the new data arrives, eliminating
-// the "everything goes empty for a beat" flicker users see on `r`.
+// visible PR list. We reset PageInfo so the next fetch is treated as a
+// first-page request and REPLACES m.Prs atomically when its message
+// arrives (see ~line 205). LastFetchTaskId is intentionally LEFT alone
+// so the fetch path's `isFirstFetch` check returns false — that gates
+// the loading spinner, which we don't want for a soft refresh.
+// SilentNextFetch suppresses the status-bar churn for this fetch.
+// Together: existing rows stay rendered, no spinner, no footer flash.
 func (m *Model) SoftReset() {
 	m.PageInfo = nil
-	m.LastFetchTaskId = ""
-	m.SetIsLoading(true)
+	m.SilentNextFetch = true
 }
 
 func FetchAllSections(

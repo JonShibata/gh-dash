@@ -305,10 +305,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if prSection, ok := currSection.(*prssection.Model); ok {
 					prSection.SoftReset()
 					cmds = append(cmds, prSection.FetchNextPageSectionRows()...)
-					// Re-enrich the currently-selected PR so the sidebar
-					// (checks tab, reviewers, comments) doesn't stay stale
-					// while the list refreshes.
-					cmds = append(cmds, m.prView.EnrichCurrRow())
+					// Force re-fetch the sidebar's enriched payload —
+					// EnrichCurrRow short-circuits when already enriched,
+					// so manual `r` would otherwise leave the sidebar
+					// stale while the list refreshes.
+					cmds = append(cmds, m.prView.RefreshEnrichedCurrRow())
 				} else {
 					currSection.ResetFilters()
 					currSection.ResetRows()
@@ -731,10 +732,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// section's mutable filter state, not in config, and a fresh
 		// section from config knows nothing about them. Iterating the
 		// live sections preserves search, filters, and cursor position.
-		// Re-enrich the selected PR too so the sidebar (checks tab,
-		// reviewers, activity) stays as fresh as the list.
+		// Force-refresh the selected PR's enriched payload too —
+		// EnrichCurrRow no-ops once IsEnriched=true (so checks would go
+		// stale), but RefreshEnrichedCurrRow re-fetches unconditionally
+		// and swaps in place without a "Loading..." flash.
 		cmds = append(cmds, m.softRefreshExistingSections()...)
-		cmds = append(cmds, m.prView.EnrichCurrRow(), m.doRefreshAtInterval())
+		cmds = append(cmds, m.prView.RefreshEnrichedCurrRow(), m.doRefreshAtInterval())
 
 	case userFetchedMsg:
 		m.ctx.User = msg.user
@@ -1140,12 +1143,12 @@ func (m *Model) updateSection(id int, sType string, msg tea.Msg) (cmd tea.Cmd) {
 		m.issues[id] = updatedSection
 	}
 
-	currSection := m.getCurrSection()
-	if currSection != nil && id == currSection.GetId() {
-		if _, ok := msg.(prssection.SectionPullRequestsFetchedMsg); ok {
-			cmd = m.onViewedRowChanged()
-		}
-	}
+	// NOTE: this used to unconditionally fire onViewedRowChanged when a
+	// SectionPullRequestsFetchedMsg arrived for the current section,
+	// which yanked the sidebar back to the Overview tab on every fetch
+	// — including silent auto-refresh ticks. The decision now lives in
+	// the SectionMsg branch in Update, which compares viewedRowKey and
+	// only resets the sidebar when the cursor actually moved.
 
 	return cmd
 }
@@ -1773,7 +1776,15 @@ func (m *Model) isUserDefinedKeybinding(msg tea.KeyMsg) bool {
 func (m *Model) renderRunningTask() string {
 	tasks := make([]context.Task, 0, len(m.tasks))
 	for _, value := range m.tasks {
+		// Silent tasks are background fetches (e.g. auto-refresh); they
+		// have lifecycle in m.tasks but never surface in the status bar.
+		if value.Silent {
+			continue
+		}
 		tasks = append(tasks, value)
+	}
+	if len(tasks) == 0 {
+		return ""
 	}
 	sort.Slice(tasks, func(i, j int) bool {
 		if tasks[i].FinishedTime != nil && tasks[j].FinishedTime == nil {

@@ -519,22 +519,103 @@ func RerunFailedChecksOnPR(
 		State:        context.TaskStart,
 		Error:        nil,
 	}
+	jcfg := ctx.Config.Defaults.Extensions.Jenkins
+	owner, name := splitOwnerRepo(repo)
 	startCmd := ctx.StartTask(task)
 	return tea.Batch(startCmd, func() tea.Msg {
-		// Failure-state filter mirrors `gh pr checks` exit semantics:
-		// failure | cancelled | timed_out are all "rerun candidates".
-		// `xargs -r` makes the no-failed-checks case a no-op rather than
-		// erroring on empty input.
+		// Layered rerun strategy. GitHub's check-run rerequest API
+		// (which the web UI's "Re-run failed checks" dropdown uses)
+		// returns 404 for integrations that didn't register a
+		// rerequest webhook handler — Deepfield's JenkinsMergeQueues
+		// app is one such case, so the API is useless for FI Tests
+		// failures. Instead we fan out by failure type:
+		//
+		//   1. FI sub-job failures (parsed from the FI Tests CheckRun's
+		//      markdown summary table) → POST to gha_fi_test_manager
+		//      with COMMENT=<sub-job-name>, one trigger per failed sub-
+		//      job. Mirrors gplm's pattern.
+		//   2. GitHub Actions workflow run failures → `gh run rerun
+		//      --failed <id>`, the standard GHA per-run mechanism.
+		//   3. Other CheckRuns (rare; e.g. third-party integrations) →
+		//      try check-run rerequest, ignore 404s.
+		//
+		// Skipped: standalone StatusContext failures with no parent
+		// CheckRun, since neither rerequest nor Jenkins-direct gives
+		// us a way to selectively retry one of those.
+		jenkinsBlock := ""
+		if jcfg.URL != "" && jcfg.Job != "" {
+			// Per-sub-job Jenkins triggers. Python regex over the FI
+			// Tests check-run summary picks failed rows reliably across
+			// emoji vs word status formats. crumb is fetched once and
+			// reused for every POST in the loop.
+			jenkinsBlock = fmt.Sprintf(
+				// URL must be quoted — `?per_page=100` would otherwise
+				// be globbed by bash and silently expand to nothing.
+				`fi_summary=$(gh api "repos/%[2]s/commits/$sha/check-runs?per_page=100" --paginate `+
+					`--jq '[.check_runs[] | select(.name=="FI Tests")] | sort_by(.started_at) | last | .output.summary // empty'); `+
+					`failed_fi=$(echo "$fi_summary" | python3 -c "`+
+					`import re,sys`+"\n"+
+					`for ln in sys.stdin:`+"\n"+
+					// Alternation MUST be a real | — \| in python regex
+					// is a literal pipe, not alternation, so the earlier
+					// version matched nothing on every PR.
+					`    m=re.match(r'\\| \\[([^\\]]+)\\].*\\| .*(❌|failure).*\\|', ln)`+"\n"+
+					`    if m: print(m.group(1))" 2>/dev/null); `+
+					`if [ -n "$failed_fi" ]; then `+
+					`crumb=$(curl -fsS -n %[3]s/crumbIssuer/api/json | jq -r '.crumb // empty'); `+
+					`if [ -z "$crumb" ]; then echo "no Jenkins crumb (~/.netrc?)" >&2; else `+
+					`meta=$(gh pr view %[1]d -R %[2]s --json headRefOid,headRefName,baseRefName); `+
+					`pr_sha=$(echo "$meta" | jq -r .headRefOid); `+
+					`head=$(echo "$meta" | jq -r .headRefName); `+
+					`base=$(echo "$meta" | jq -r .baseRefName); `+
+					`echo "$failed_fi" | while IFS= read -r job; do `+
+					`[ -z "$job" ] && continue; `+
+					`curl -fsS -n -X POST -H "Jenkins-Crumb: $crumb" `+
+					`--data-urlencode "PIPEDREAM_SHA=$pr_sha" `+
+					`--data-urlencode "PIPEDREAM_BRANCH=$head" `+
+					`--data-urlencode "PIPEDREAM_TARGET_BRANCH=$base" `+
+					`--data-urlencode "REPO_OWNER=%[5]s" `+
+					`--data-urlencode "REPO_NAME=%[6]s" `+
+					`--data-urlencode "EVENT_NAME=manual.gh-dash" `+
+					`--data-urlencode "COMMENT=$job" `+
+					`%[3]s/job/%[4]s/buildWithParameters >/dev/null && echo "  reran FI: $job" >&2; `+
+					`done; `+
+					`fi; fi; `,
+				prNumber, repo, jcfg.URL, jcfg.Job, owner, name,
+			)
+		}
 		script := fmt.Sprintf(
-			`gh pr checks %d -R %s --json link,state `+
-				`--jq '.[] | select(.state=="failure" or .state=="cancelled" or .state=="timed_out") | .link' `+
-				`| grep -oE '/runs/[0-9]+' | grep -oE '[0-9]+$' | sort -u `+
-				`| xargs -r -I{} gh run rerun --failed -R %s {}`,
-			prNumber, repo, repo,
+			`set -uo pipefail; `+
+				`sha=$(gh pr view %[1]d -R %[2]s --json headRefOid --jq .headRefOid); `+
+				jenkinsBlock+
+				// GHA path: rerun failed jobs of any failed workflow run.
+				`gha_runs=$(gh api repos/%[2]s/actions/runs?head_sha=$sha --paginate `+
+				`--jq '.workflow_runs[]? | select(.conclusion=="failure" or .conclusion=="cancelled" or .conclusion=="timed_out") | .id' `+
+				`| sort -u); `+
+				`if [ -n "$gha_runs" ]; then `+
+				`echo "$gha_runs" | xargs -I{} gh run rerun --failed -R %[2]s {} && `+
+				`echo "  reran GHA workflow runs" >&2; `+
+				`fi; `+
+				// Other CheckRuns: try rerequest, swallow 404s.
+				`other_ids=$(gh api repos/%[2]s/commits/$sha/check-runs --paginate `+
+				`--jq '.check_runs[]? | select((.conclusion=="failure" or .conclusion=="cancelled" or .conclusion=="timed_out") and .name != "FI Tests") | .id'); `+
+				`if [ -n "$other_ids" ]; then `+
+				`echo "$other_ids" | while IFS= read -r id; do `+
+				`gh api -X POST repos/%[2]s/check-runs/$id/rerequest --silent 2>/dev/null && `+
+				`echo "  rerequested check-run $id" >&2; `+
+				`done; `+
+				`fi`,
+			prNumber, repo,
 		)
-		log.Info("Rerunning failed checks", "pr", prNumber, "repo", repo)
+		log.Info("Rerunning failed checks", "pr", prNumber, "repo", repo,
+			"jenkins_configured", jcfg.URL != "")
 		c := exec.Command("bash", "-c", script)
-		err := c.Run()
+		out, err := c.CombinedOutput()
+		if err != nil {
+			log.Error("rerun script failed", "err", err, "out", string(out))
+		} else {
+			log.Info("rerun script ok", "out", string(out))
+		}
 		return constants.TaskFinishedMsg{
 			TaskId:      taskId,
 			SectionId:   section.Id,

@@ -180,6 +180,14 @@ func makeCheckSuite(workflowName string, status string, conclusion string) data.
 				Name: graphql.String(workflowName),
 			},
 		},
+		// Mark suite as having produced check-runs so it isn't filtered
+		// out by the integration-subscription guard (Cursor / Figma
+		// suites that sit at QUEUED forever with zero check-runs).
+		CheckRuns: struct {
+			TotalCount graphql.Int
+		}{
+			TotalCount: 1,
+		},
 	}
 }
 
