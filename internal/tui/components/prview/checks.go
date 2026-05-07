@@ -508,6 +508,34 @@ func (sidebar *Model) renderChecks() string {
 		switch node.Typename {
 		case "CheckRun":
 			checkRun := node.CheckRun
+			// FI Tests posts a markdown table of per-job results in its
+			// summary. Expand it into one row per sub-job (matching the
+			// per-check rendering style) so the user sees individual
+			// failures without leaving gh-dash. Falls through to normal
+			// rendering when the summary is empty / the parser yields
+			// nothing.
+			if subJobs, _ := parseFITests(checkRun); len(subJobs) > 0 {
+				for _, j := range subJobs {
+					row := sidebar.renderFISubJobRow(j)
+					reportedChecks[j.Name] = true
+					switch j.Category {
+					case CheckWaiting:
+						waiting = append(waiting, row)
+					case CheckFailure:
+						failures = append(failures, row)
+						if j.URL != "" {
+							urlLine := lipgloss.NewStyle().
+								Foreground(sidebar.ctx.Theme.FaintText).
+								PaddingLeft(8).
+								Render("→ " + j.URL)
+							failures = append(failures, urlLine)
+						}
+					default:
+						rest = append(rest, row)
+					}
+				}
+				continue
+			}
 			var renderedStatus string
 			category, renderedStatus = sidebar.renderCheckRunConclusion(checkRun)
 			checkName = string(checkRun.Name)
