@@ -490,6 +490,12 @@ func (m *BaseModel) GetPromptConfirmation() string {
 		case m.PromptConfirmationAction == "approveWorkflows" && m.Ctx.View == config.PRsView:
 			prompt = "Are you sure you want to approve all workflows? (Y/n) "
 
+		case m.PromptConfirmationAction == "rerunFailedChecks" && m.Ctx.View == config.PRsView:
+			prompt = "Rerun failed checks on this PR? (Y/n) "
+
+		case m.PromptConfirmationAction == "jenkinsRerun" && m.Ctx.View == config.PRsView:
+			prompt = "Trigger Jenkins rerun for this PR? (Y/n) "
+
 		case m.PromptConfirmationAction == "close" && m.Ctx.View == config.IssuesView:
 			prompt = "Are you sure you want to close this issue? (Y/n) "
 
@@ -507,7 +513,13 @@ func (m *BaseModel) GetPromptConfirmation() string {
 
 		m.PromptConfirmationBox.SetPrompt(prompt)
 
-		return m.Ctx.Styles.ListViewPort.PagerStyle.Render(m.PromptConfirmationBox.View())
+		// Override PagerStyle's faint foreground (used elsewhere for page
+		// counters) so the confirmation prompt stays readable on the
+		// selected background.
+		style := m.Ctx.Styles.ListViewPort.PagerStyle.
+			Foreground(m.Ctx.Theme.PrimaryText).
+			Bold(true)
+		return style.Render(m.PromptConfirmationBox.View())
 	}
 
 	return ""

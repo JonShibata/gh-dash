@@ -35,6 +35,8 @@ type KeyMap struct {
 	LastLine              key.Binding
 	TogglePreview         key.Binding
 	TogglePreviewPosition key.Binding
+	EnterDetail           key.Binding
+	ExitDetail            key.Binding
 	OpenGithub            key.Binding
 	Refresh               key.Binding
 	RefreshAll            key.Binding
@@ -125,6 +127,8 @@ func (k KeyMap) AppKeys() []key.Binding {
 		k.RefreshAll,
 		k.TogglePreview,
 		k.TogglePreviewPosition,
+		k.EnterDetail,
+		k.ExitDetail,
 		k.OpenGithub,
 		k.CopyNumber,
 		k.CopyUrl,
@@ -160,6 +164,14 @@ var Keys = &KeyMap{
 	TogglePreviewPosition: key.NewBinding(
 		key.WithKeys("P"),
 		key.WithHelp("P", "toggle preview position"),
+	),
+	EnterDetail: key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "open detail fullscreen"),
+	),
+	ExitDetail: key.NewBinding(
+		key.WithKeys("esc", "backspace"),
+		key.WithHelp("esc/⌫", "exit detail fullscreen"),
 	),
 	OpenGithub: key.NewBinding(
 		key.WithKeys("o"),

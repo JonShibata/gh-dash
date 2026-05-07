@@ -70,6 +70,10 @@ type Model struct {
 	// is selected yet.
 	lastViewedRowKey string
 	positionOverride string // "" means no override, "right" or "bottom"
+	// detailFullscreen makes the preview pane occupy the entire content
+	// area and hides the section list. Toggled with Enter (in) and
+	// Esc/q/Backspace (out). Only meaningful when a row is selected.
+	detailFullscreen bool
 }
 
 func NewModel(location config.Location) Model {
@@ -224,6 +228,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Detail-fullscreen mode: hijack list-navigation keys to scroll
+		// the preview viewport instead of moving the (hidden) row cursor.
+		// Esc/Backspace exits back to the split layout. Enter/PageUp/
+		// PageDown/Toggle keys still flow through the main switch below.
+		if m.detailFullscreen {
+			switch {
+			case key.Matches(msg, m.keys.ExitDetail):
+				m.detailFullscreen = false
+				m.sidebar.Fullscreen = false
+				m.syncMainContentDimensions()
+				m.syncProgramContext()
+				return m, m.syncSidebar()
+			case key.Matches(msg, m.keys.Up),
+				key.Matches(msg, m.keys.Down),
+				key.Matches(msg, m.keys.FirstLine),
+				key.Matches(msg, m.keys.LastLine):
+				m.sidebar, sidebarCmd = m.sidebar.Update(msg)
+				return m, sidebarCmd
+			}
+		}
+
 		switch {
 		case m.isUserDefinedKeybinding(msg):
 			cmd = m.executeKeybinding(msg.String())
@@ -275,6 +300,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				currSection.LastItem()
 				cmd = m.onViewedRowChanged()
 			}
+
+		case key.Matches(msg, m.keys.EnterDetail) &&
+			currRowData != nil &&
+			(m.ctx.View == config.PRsView || m.ctx.View == config.IssuesView || m.ctx.View == config.RepoView):
+			// Notifications view binds Enter to load the notification
+			// subject; only fullscreen in list-style views with a row.
+			m.detailFullscreen = true
+			m.sidebar.IsOpen = true
+			m.sidebar.Fullscreen = true
+			m.syncMainContentDimensions()
+			m.syncProgramContext()
+			m.sidebar.ScrollToTop()
+			cmd = m.syncSidebar()
 
 		case key.Matches(msg, m.keys.TogglePreview):
 			m.sidebar.IsOpen = !m.sidebar.IsOpen
@@ -972,7 +1010,11 @@ func (m Model) View() tea.View {
 	s.WriteString("\n")
 	content := "No sections defined"
 	currSection := m.getCurrSection()
-	if currSection != nil {
+	if m.detailFullscreen {
+		// Section list hidden — sidebar (with prView content) consumes
+		// the entire content area. Tabs and footer remain visible.
+		content = m.sidebar.View()
+	} else if currSection != nil {
 		if m.ctx.PreviewPosition == "bottom" && m.sidebar.IsOpen {
 			content = lipgloss.JoinVertical(
 				lipgloss.Left,
@@ -1008,16 +1050,24 @@ func (m Model) View() tea.View {
 		lipgloss.NewLayer(zone.Scan(s.String())),
 	}
 
+	// Completions popup X anchor: left edge of the preview pane in split
+	// mode (right of the list), small inset from the screen edge in
+	// fullscreen (no list to anchor against).
+	overlayX := m.ctx.MainContentWidth + 4
+	if m.detailFullscreen {
+		overlayX = 4
+	}
+
 	prCmp := m.prView.ViewCompletions()
 	if prCmp != "" {
 		y := m.ctx.ScreenHeight - common.FooterHeight - m.prView.InputBoxLineFromBottom() - common.InputBoxHeight - 4
-		layers = append(layers, lipgloss.NewLayer(prCmp).X(m.ctx.MainContentWidth+4).Y(y))
+		layers = append(layers, lipgloss.NewLayer(prCmp).X(overlayX).Y(y))
 	}
 
 	issueCmp := m.issueSidebar.ViewCompletions()
 	if issueCmp != "" {
 		y := m.ctx.ScreenHeight - common.FooterHeight - m.issueSidebar.InputBoxLineFromButton() - common.InputBoxHeight - 4
-		layers = append(layers, lipgloss.NewLayer(issueCmp).X(m.ctx.MainContentWidth+4).Y(y))
+		layers = append(layers, lipgloss.NewLayer(issueCmp).X(overlayX).Y(y))
 	}
 
 	comp := lipgloss.NewCompositor(layers...)
@@ -1206,6 +1256,19 @@ func (m *Model) getBaseContentHeight() int {
 
 func (m *Model) syncMainContentDimensions() {
 	m.ctx.PreviewPosition = m.resolvePreviewPosition()
+
+	if m.detailFullscreen {
+		// Preview occupies the entire content area; the section list is
+		// hidden. Keep MainContentWidth populated so overlay positioning
+		// (input completions, prompts) and any preview-internal layout
+		// that reads it still get sane numbers.
+		m.ctx.SidebarOpen = true
+		m.ctx.DynamicPreviewWidth = m.ctx.ScreenWidth
+		m.ctx.DynamicPreviewHeight = m.getBaseContentHeight()
+		m.ctx.MainContentWidth = m.ctx.ScreenWidth
+		m.ctx.MainContentHeight = m.getBaseContentHeight()
+		return
+	}
 
 	if !m.sidebar.IsOpen {
 		m.ctx.MainContentWidth = m.ctx.ScreenWidth
