@@ -528,6 +528,18 @@ func (m *Model) ResetRows() {
 	m.BaseModel.ResetRows()
 }
 
+// SoftReset prepares the section for a re-fetch without blanking the
+// visible PR list. PageInfo and the last fetch task ID are cleared so
+// the next fetch is treated as a "first page" — its result will REPLACE
+// m.Prs atomically (see line ~205 in this file) instead of appending.
+// Existing rows stay rendered until the new data arrives, eliminating
+// the "everything goes empty for a beat" flicker users see on `r`.
+func (m *Model) SoftReset() {
+	m.PageInfo = nil
+	m.LastFetchTaskId = ""
+	m.SetIsLoading(true)
+}
+
 func FetchAllSections(
 	ctx *context.ProgramContext,
 	prs []section.Section,

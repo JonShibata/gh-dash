@@ -194,7 +194,12 @@ type Defaults struct {
 	View                   ViewType      `yaml:"view"`
 	Layout                 LayoutConfig  `yaml:"layout,omitempty"`
 	RefetchIntervalMinutes int           `yaml:"refetchIntervalMinutes,omitempty"`
-	DateFormat             string        `yaml:"dateFormat,omitempty"`
+	// RefetchIntervalSeconds, when > 0, takes precedence over the minutes
+	// field — useful for "watch CI checks live" style polling where 30s or
+	// 15s is more useful than the upstream 30-min default. 0 falls back to
+	// RefetchIntervalMinutes; both 0 disables auto-refresh entirely.
+	RefetchIntervalSeconds int    `yaml:"refetchIntervalSeconds,omitempty"`
+	DateFormat             string `yaml:"dateFormat,omitempty"`
 	// HideAuthors is a list of GitHub logins whose comments and reviews are
 	// suppressed in the activity tab. Use for noisy bot accounts (e.g. CI
 	// bots that post per-build status comments) so the human conversation

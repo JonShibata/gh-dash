@@ -289,11 +289,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Refresh):
 			if currSection != nil {
 				data.ClearEnrichmentCache()
-				currSection.ResetFilters()
-				currSection.ResetRows()
-				m.syncSidebar()
-				currSection.SetIsLoading(true)
-				cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
+				// Soft path for PR sections: keep the visible list rendered
+				// while the fetch is in flight, then atomically swap in the
+				// fresh page when it returns. The blank-then-load behavior
+				// upstream uses for `r` is jarring during live CI watching.
+				// Filter state is preserved (no ResetFilters) — refresh
+				// means "re-fetch", not "wipe my view".
+				if prSection, ok := currSection.(*prssection.Model); ok {
+					prSection.SoftReset()
+					cmds = append(cmds, prSection.FetchNextPageSectionRows()...)
+					// Re-enrich the currently-selected PR so the sidebar
+					// (checks tab, reviewers, comments) doesn't stay stale
+					// while the list refreshes.
+					cmds = append(cmds, m.prView.EnrichCurrRow())
+				} else {
+					currSection.ResetFilters()
+					currSection.ResetRows()
+					m.syncSidebar()
+					currSection.SetIsLoading(true)
+					cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
+				}
 			}
 
 		case key.Matches(msg, m.keys.RefreshAll):
@@ -705,7 +720,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case intervalRefresh:
 		newSections, fetchSectionsCmds := m.fetchAllViewSections()
 		m.setCurrentViewSections(newSections)
-		cmds = append(cmds, fetchSectionsCmds, m.doRefreshAtInterval())
+		// Re-enrich the selected PR so the sidebar (checks, reviewers,
+		// activity) stays as fresh as the list. Without this the list ticks
+		// but the sidebar shows stale data until you press `r`.
+		cmds = append(cmds, fetchSectionsCmds, m.prView.EnrichCurrRow(), m.doRefreshAtInterval())
 
 	case userFetchedMsg:
 		m.ctx.User = msg.user
@@ -1798,17 +1816,29 @@ func fetchUser() tea.Msg {
 
 type intervalRefresh time.Time
 
+// refetchInterval returns the effective auto-refresh interval. Seconds
+// wins over minutes when both are set, so a user can drop a 30 or 15 in
+// `refetchIntervalSeconds` for live CI watching without rewriting the
+// minutes default. Returns 0 to disable.
+func (m *Model) refetchInterval() time.Duration {
+	if s := m.ctx.Config.Defaults.RefetchIntervalSeconds; s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	if min := m.ctx.Config.Defaults.RefetchIntervalMinutes; min > 0 {
+		return time.Duration(min) * time.Minute
+	}
+	return 0
+}
+
 func (m *Model) doRefreshAtInterval() tea.Cmd {
-	if m.ctx.Config.Defaults.RefetchIntervalMinutes == 0 {
+	interval := m.refetchInterval()
+	if interval == 0 {
 		return nil
 	}
 
-	return tea.Tick(
-		time.Minute*time.Duration(m.ctx.Config.Defaults.RefetchIntervalMinutes),
-		func(t time.Time) tea.Msg {
-			return intervalRefresh(t)
-		},
-	)
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
+		return intervalRefresh(t)
+	})
 }
 
 type updateFooterMsg struct{}
