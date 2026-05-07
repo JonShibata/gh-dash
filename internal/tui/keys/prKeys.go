@@ -30,6 +30,7 @@ type PRKeyMap struct {
 	ToggleSmartFiltering key.Binding
 	ViewIssues           key.Binding
 	OpenFirstFailed      key.Binding
+	RerunFailedChecks    key.Binding
 }
 
 var PRKeys = PRKeyMap{
@@ -113,6 +114,10 @@ var PRKeys = PRKeyMap{
 		key.WithKeys("O"),
 		key.WithHelp("O", "open first failed check"),
 	),
+	RerunFailedChecks: key.NewBinding(
+		key.WithKeys("f"),
+		key.WithHelp("f", "rerun failed checks"),
+	),
 }
 
 func PRFullHelp() []key.Binding {
@@ -136,6 +141,7 @@ func PRFullHelp() []key.Binding {
 		PRKeys.ToggleSmartFiltering,
 		PRKeys.ViewIssues,
 		PRKeys.OpenFirstFailed,
+		PRKeys.RerunFailedChecks,
 	}
 }
 
@@ -204,6 +210,8 @@ func rebindPRKeys(keys []config.Keybinding) error {
 			key = &PRKeys.SummaryViewMore
 		case "openFirstFailed":
 			key = &PRKeys.OpenFirstFailed
+		case "rerunFailedChecks":
+			key = &PRKeys.RerunFailedChecks
 		default:
 			return fmt.Errorf("unknown built-in pr key: '%s'", prKey.Builtin)
 		}

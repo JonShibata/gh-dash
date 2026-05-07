@@ -449,6 +449,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 
+			case key.Matches(msg, keys.PRKeys.RerunFailedChecks):
+				if currRowData != nil {
+					cmd = m.promptConfirmation(currSection, "rerunFailedChecks")
+				}
+				return m, cmd
+
 			case key.Matches(msg, keys.PRKeys.ViewIssues):
 				cmds = append(cmds, m.switchSelectedView())
 

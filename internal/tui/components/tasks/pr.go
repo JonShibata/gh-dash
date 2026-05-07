@@ -498,3 +498,49 @@ func ApproveWorkflows(
 		}
 	})
 }
+
+// RerunFailedChecksOnPR re-runs the failed jobs on every workflow run that
+// has a failed/cancelled/timed-out check on this PR's latest commit. The
+// pipeline is multi-step (list checks → extract run IDs → POST rerun) and
+// has no single `gh` subcommand, so we shell out to a bash one-liner
+// rather than threading three task invocations together.
+func RerunFailedChecksOnPR(
+	ctx *context.ProgramContext,
+	section SectionIdentifier,
+	pr data.RowData,
+) tea.Cmd {
+	prNumber := pr.GetNumber()
+	repo := pr.GetRepoNameWithOwner()
+	taskId := buildTaskId("pr_rerun_failed", prNumber)
+	task := context.Task{
+		Id:           taskId,
+		StartText:    fmt.Sprintf("Rerunning failed checks on PR #%d", prNumber),
+		FinishedText: fmt.Sprintf("Reran failed checks on PR #%d", prNumber),
+		State:        context.TaskStart,
+		Error:        nil,
+	}
+	startCmd := ctx.StartTask(task)
+	return tea.Batch(startCmd, func() tea.Msg {
+		// Failure-state filter mirrors `gh pr checks` exit semantics:
+		// failure | cancelled | timed_out are all "rerun candidates".
+		// `xargs -r` makes the no-failed-checks case a no-op rather than
+		// erroring on empty input.
+		script := fmt.Sprintf(
+			`gh pr checks %d -R %s --json link,state `+
+				`--jq '.[] | select(.state=="failure" or .state=="cancelled" or .state=="timed_out") | .link' `+
+				`| grep -oE '/runs/[0-9]+' | grep -oE '[0-9]+$' | sort -u `+
+				`| xargs -r -I{} gh run rerun --failed -R %s {}`,
+			prNumber, repo, repo,
+		)
+		log.Info("Rerunning failed checks", "pr", prNumber, "repo", repo)
+		c := exec.Command("bash", "-c", script)
+		err := c.Run()
+		return constants.TaskFinishedMsg{
+			TaskId:      taskId,
+			SectionId:   section.Id,
+			SectionType: section.Type,
+			Err:         err,
+			Msg:         UpdatePRMsg{PrNumber: prNumber},
+		}
+	})
+}
