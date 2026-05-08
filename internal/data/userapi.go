@@ -10,11 +10,31 @@ import (
 var (
 	repoUserCache = make(map[string][]User)
 	userCacheMu   sync.RWMutex
+
+	repoTeamCache = make(map[string][]Team)
+	teamCacheMu   sync.RWMutex
 )
 
 type User struct {
 	Login string `json:"login"`
 	Name  string `json:"name"`
+}
+
+// Team is a GitHub organization team that can be requested as a PR
+// reviewer. Slug + Org compose the `org/slug` reviewer reference that
+// `gh pr edit --add-reviewer` accepts. Name and Description are
+// display-only.
+type Team struct {
+	Slug        string
+	Name        string
+	Description string
+	Org         string
+}
+
+// Reviewer returns the canonical "org/slug" form used by
+// `gh pr edit --add-reviewer` and shown to the user as a single token.
+func (t Team) Reviewer() string {
+	return t.Org + "/" + t.Slug
 }
 
 type MentionableUsersResponse struct {
@@ -84,6 +104,82 @@ func ClearRepoUserCache(repoNameWithOwner string) {
 	userCacheMu.Lock()
 	defer userCacheMu.Unlock()
 	delete(repoUserCache, repoNameWithOwner)
+}
+
+type OrgTeamsResponse struct {
+	Organization struct {
+		Teams struct {
+			Nodes []struct {
+				Slug        string
+				Name        string
+				Description string
+			}
+		} `graphql:"teams(first: 100)"`
+	} `graphql:"organization(login: $owner)"`
+}
+
+func CachedRepoTeams(repoNameWithOwner string) ([]Team, bool) {
+	teamCacheMu.RLock()
+	defer teamCacheMu.RUnlock()
+	teams, ok := repoTeamCache[repoNameWithOwner]
+	return teams, ok
+}
+
+// FetchRepoTeams returns the teams of the repo's owner-org that the
+// caller can see. Used to populate review-request suggestions with
+// `org/slug` entries. Failure modes (owner is a personal account, the
+// viewer isn't an org member, the org has no teams) are all silent —
+// the function returns an empty slice and caches the empty result so
+// subsequent autocomplete keystrokes don't re-query.
+func FetchRepoTeams(owner, repoName string) ([]Team, error) {
+	repo := owner + "/" + repoName
+	if cached, ok := CachedRepoTeams(repo); ok {
+		return cached, nil
+	}
+
+	if client == nil {
+		var err error
+		client, err = gh.DefaultGraphQLClient()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var result OrgTeamsResponse
+	variables := map[string]any{
+		"owner": graphql.String(owner),
+	}
+	err := client.Query("GetOrgTeams", &result, variables)
+	if err != nil {
+		// Owner is a user, not org, or viewer lacks org-member
+		// access. Cache an empty slice so we don't retry on every
+		// keystroke; the user can `Ctrl+f` to refresh later.
+		teamCacheMu.Lock()
+		repoTeamCache[repo] = []Team{}
+		teamCacheMu.Unlock()
+		return []Team{}, nil
+	}
+
+	teams := make([]Team, 0, len(result.Organization.Teams.Nodes))
+	for _, n := range result.Organization.Teams.Nodes {
+		teams = append(teams, Team{
+			Slug:        n.Slug,
+			Name:        n.Name,
+			Description: n.Description,
+			Org:         owner,
+		})
+	}
+
+	teamCacheMu.Lock()
+	repoTeamCache[repo] = teams
+	teamCacheMu.Unlock()
+	return teams, nil
+}
+
+func ClearRepoTeamCache(repoNameWithOwner string) {
+	teamCacheMu.Lock()
+	defer teamCacheMu.Unlock()
+	delete(repoTeamCache, repoNameWithOwner)
 }
 
 func UserLogins(users []User) []string {
