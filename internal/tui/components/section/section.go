@@ -509,6 +509,10 @@ func (m *BaseModel) GetPromptConfirmation() string {
 			prompt = "Enter PR title: "
 		case m.PromptConfirmationAction == "done_all" && m.Ctx.View == config.NotificationsView:
 			prompt = "Are you sure you want to mark all as done? (Y/n) "
+		case strings.HasPrefix(m.PromptConfirmationAction, "resolveThread:") && m.Ctx.View == config.PRsView:
+			prompt = "Resolve this review thread? (Y/n) "
+		case strings.HasPrefix(m.PromptConfirmationAction, "unresolveThread:") && m.Ctx.View == config.PRsView:
+			prompt = "Reopen this review thread? (Y/n) "
 		}
 
 		m.PromptConfirmationBox.SetPrompt(prompt)

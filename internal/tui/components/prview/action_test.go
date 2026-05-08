@@ -259,31 +259,15 @@ func TestSetIsReplyingToReviewNoThreadsIsNoOp(t *testing.T) {
 	require.False(t, m.GetIsReplyingToReview(), "editor should not enter reply mode without a target")
 }
 
-// pickReplyTarget returns the *most recent unresolved* thread's first
-// comment id, skipping resolved threads even when they are newer.
-func TestPickReplyTargetSkipsResolvedThreads(t *testing.T) {
+// pickReplyTarget targets whatever thread the activity-tab cursor is
+// pointing at. The cursor walks all threads (resolved and unresolved)
+// so x can toggle resolve/unresolve; the cursor starts at index 0,
+// which after the most-recent-first reverse is the newest thread.
+func TestPickReplyTargetUsesCursor(t *testing.T) {
 	m := newTestModelForAction(t)
 	enriched := data.EnrichedPullRequestData{}
-	mkThread := func(id int, resolved bool) struct {
-		Id           string
-		IsOutdated   bool
-		IsResolved   bool
-		OriginalLine int
-		StartLine    int
-		Line         int
-		Path         string
-		Comments     data.ReviewComments `graphql:"comments(first: 20)"`
-	} {
-		return struct {
-			Id           string
-			IsOutdated   bool
-			IsResolved   bool
-			OriginalLine int
-			StartLine    int
-			Line         int
-			Path         string
-			Comments     data.ReviewComments `graphql:"comments(first: 20)"`
-		}{
+	mkThread := func(id int, resolved bool) data.ReviewThread {
+		return data.ReviewThread{
 			IsResolved: resolved,
 			Comments: data.ReviewComments{Nodes: []data.ReviewComment{
 				{DatabaseId: id},
@@ -292,10 +276,15 @@ func TestPickReplyTargetSkipsResolvedThreads(t *testing.T) {
 	}
 	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
 		mkThread(111, false), // older unresolved
-		mkThread(222, true),  // newer but resolved → skipped
+		mkThread(222, true),  // newer (cursor lands here at idx 0)
 	)
 	m.pr.Data.Enriched = enriched
 	m.pr.Data.IsEnriched = true
 
+	// Default cursor (idx 0) targets the most recent thread.
+	require.Equal(t, 222, m.pickReplyTarget())
+
+	// Move the cursor down one — now targets the older unresolved.
+	m.MoveThreadCursor(1)
 	require.Equal(t, 111, m.pickReplyTarget())
 }

@@ -1,6 +1,10 @@
 package markdown
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"sync"
+
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/ansi"
 	"charm.land/glamour/v2/styles"
@@ -35,4 +39,55 @@ func GetMarkdownRenderer(width int) glamour.TermRenderer {
 	}
 
 	return *markdownRenderer
+}
+
+// Render is a memoizing wrapper around glamour rendering. Activity tab
+// re-runs renderActivity on every keystroke, calling glamour for each
+// of the PR's comments/reviews/thread-comments. Each glamour render
+// can take 100-500ms; a 30-comment PR means seconds per keystroke.
+// Caching by (body, width) drops second-and-later renders to a map
+// lookup.
+//
+// The cache is global and lives for the process lifetime. Comment
+// bodies are immutable once posted, so the only collisions are
+// the same body re-rendered at the same width — desired behavior.
+// A comment that gets edited produces a different cache key (new body
+// content), so stale renders aren't a concern.
+func Render(width int, body string) (string, error) {
+	key := cacheKey(width, body)
+	cacheMu.RLock()
+	if v, ok := cache[key]; ok {
+		cacheMu.RUnlock()
+		return v, nil
+	}
+	cacheMu.RUnlock()
+
+	r := GetMarkdownRenderer(width)
+	out, err := r.Render(body)
+	if err != nil {
+		return out, err
+	}
+
+	cacheMu.Lock()
+	cache[key] = out
+	cacheMu.Unlock()
+	return out, nil
+}
+
+var (
+	cache   = map[uint64]string{}
+	cacheMu sync.RWMutex
+)
+
+// cacheKey hashes body + width into a single uint64. SHA-256 is overkill
+// for cache keys but keeps collisions astronomically rare without
+// having to allocate a string-typed key per lookup.
+func cacheKey(width int, body string) uint64 {
+	h := sha256.New()
+	var w [8]byte
+	binary.LittleEndian.PutUint64(w[:], uint64(width))
+	h.Write(w[:])
+	h.Write([]byte(body))
+	sum := h.Sum(nil)
+	return binary.LittleEndian.Uint64(sum[:8])
 }

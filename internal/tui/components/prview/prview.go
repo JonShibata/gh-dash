@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	log "charm.land/log/v2"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/common"
@@ -45,9 +46,43 @@ type Model struct {
 	// SetIsReplyingToReview when the editor opens; consumed by Update on
 	// submit. Zero when no reply is in flight.
 	replyTargetCommentId int
+	// threadCursorIdx is the index into unresolvedThreads() that the user
+	// has focused on the Activity tab. R/X act on this thread. Reset to 0
+	// on PR change. Clamped on cursor move.
+	threadCursorIdx int
+	// threadLineOffsets maps a thread's GraphQL Id to its starting line
+	// offset within the rendered Activity body (including viewHeader so
+	// these are absolute viewport coordinates). Populated by
+	// renderActivity; consumed by the parent on n/N and the reply-mode
+	// scroll-to-bottom logic.
+	threadLineOffsets map[string]int
+	// threadLineEnds is the line just past each thread block's last
+	// visible line. Equals threadLineOffsets[id] + height of the
+	// rendered block (including the inline reply input when reply
+	// mode is on). Used to bottom-align the input in the viewport.
+	threadLineEnds map[string]int
+	// replyViewportHeight is the height (in lines) of the sidebar
+	// viewport at the moment reply mode opened. Used by renderActivity
+	// to pad above the focused thread so its end lands at the viewport
+	// bottom even when the thread is near the document top (otherwise
+	// the input would render in the upper portion of the screen with
+	// blank space below it, since YOffset can't go negative).
+	// Set by SetReplyViewportHeight before syncSidebar in
+	// openSidebarForReply; ignored when reply mode is off.
+	replyViewportHeight int
 }
 
-var tabs = []string{" Overview", " Activity", " Commits", " Checks", " Files Changed"}
+// Exported tab names so other packages can compare SelectedTab() without
+// duplicating the literal strings (which include leading icon glyphs).
+var (
+	OverviewTab     = " Overview"
+	ActivityTab     = " Activity"
+	CommitsTab      = " Commits"
+	ChecksTab       = " Checks"
+	FilesChangedTab = " Files Changed"
+)
+
+var tabs = []string{OverviewTab, ActivityTab, CommitsTab, ChecksTab, FilesChangedTab}
 
 func NewModel(ctx *context.ProgramContext) Model {
 	c := carousel.New(
@@ -60,6 +95,13 @@ func NewModel(ctx *context.ProgramContext) Model {
 		pr:       nil,
 		carousel: c,
 		editor:   cmpcontroller.New(ctx, inputbox.ModelOpts{TextArea: &ta}),
+		// Allocate the offset maps here so renderActivity can mutate
+		// them in place (delete + assign). View() is a VALUE receiver,
+		// so re-assigning these fields inside it would be lost — but
+		// mutations to the underlying map persist because maps are
+		// reference types.
+		threadLineOffsets: map[string]int{},
+		threadLineEnds:    map[string]int{},
 	}
 }
 
@@ -214,11 +256,24 @@ func (m *Model) viewOverviewTab() string {
 	body.WriteString("\n")
 	body.WriteString(m.renderChecksOverview())
 
-	if m.editor.Mode() != cmpcontroller.ModeNone {
+	// Reply-review input is rendered inline on the Activity tab beneath
+	// the focused thread (so the user sees the thread they're replying
+	// to). All other input modes render here at the bottom of Overview.
+	if mode := m.editor.Mode(); mode != cmpcontroller.ModeNone && mode != cmpcontroller.ModeReplyReview {
 		body.WriteString(m.ctx.Styles.Sidebar.InputBox.Render(m.editor.View()))
 	}
 
 	return body.String()
+}
+
+// EditorReplyView returns the rendered reply-mode input box, or "" when
+// the editor is not in reply mode. Called from the Activity tab to
+// render the input inline below the focused thread.
+func (m *Model) EditorReplyView() string {
+	if m.editor.Mode() != cmpcontroller.ModeReplyReview {
+		return ""
+	}
+	return m.ctx.Styles.Sidebar.InputBox.Render(m.editor.View())
 }
 
 func (m *Model) ViewCompletions() string {
@@ -566,10 +621,21 @@ func (m *Model) SetSectionId(id int) {
 }
 
 func (m *Model) SetRow(d *prrow.Data) {
+	prevNumber := 0
+	if m.pr != nil && m.pr.Data != nil {
+		prevNumber = m.pr.Data.GetNumber()
+	}
 	if d == nil {
 		m.pr = nil
 	} else {
 		m.pr = &prrow.PullRequest{Ctx: m.ctx, Data: d}
+	}
+	newNumber := 0
+	if d != nil {
+		newNumber = d.GetNumber()
+	}
+	if newNumber != prevNumber {
+		m.threadCursorIdx = 0
 	}
 }
 
@@ -582,9 +648,11 @@ type EnrichedPrMsg struct {
 
 func (m *Model) EnrichCurrRow() tea.Cmd {
 	if m == nil || m.pr == nil || m.pr.Data.IsEnriched {
+		log.Info("EnrichCurrRow skip", "nilModel", m == nil, "nilPr", m == nil || m.pr == nil, "alreadyEnriched", m != nil && m.pr != nil && m.pr.Data.IsEnriched)
 		return nil
 	}
 	url := m.pr.Data.Primary.Url
+	log.Info("EnrichCurrRow firing", "url", url, "sectionId", m.sectionId)
 	return func() tea.Msg {
 		d, err := data.FetchPullRequest(url)
 		return EnrichedPrMsg{
@@ -784,6 +852,17 @@ func (m *Model) GoToFirstTab() {
 	m.carousel.SetCursor(0)
 }
 
+// PrevTab / NextTab move the prview tab cursor by one. Exposed so the
+// parent can wire h/l (or arrow keys) to the same carousel that [/]
+// drives, without synthesizing a keypress.
+func (m *Model) PrevTab() {
+	m.carousel.MoveLeft()
+}
+
+func (m *Model) NextTab() {
+	m.carousel.MoveRight()
+}
+
 func (m *Model) GoToActivityTab() {
 	m.carousel.SetCursor(1) // Activity is the second tab (index 1)
 }
@@ -892,27 +971,166 @@ func (m *Model) SetIsReplyingToReview(isReplying bool) tea.Cmd {
 	return cmd
 }
 
-// pickReplyTarget returns the REST databaseId of the most recently
-// updated unresolved thread's root comment, or 0 if no eligible thread
-// exists. v1 heuristic: walk threads in reverse (GraphQL returns oldest
-// first under `last: 50`, so the tail is most recent), skip resolved
-// ones, and take the first comment of that thread as the root.
-func (m *Model) pickReplyTarget() int {
-	if m.pr == nil || !m.pr.Data.IsEnriched {
-		return 0
+// allThreads returns the visible review threads in cursor order
+// (most-recent first; GraphQL returns oldest first under `last: 50`,
+// so we reverse). Includes resolved threads — the cursor walks them
+// too so x can toggle resolve/unresolve. Threads with zero comments
+// are dropped (nothing to act on).
+func (m *Model) allThreads() []data.ReviewThread {
+	if m.pr == nil || m.pr.Data == nil || !m.pr.Data.IsEnriched {
+		return nil
 	}
-	threads := m.pr.Data.Enriched.ReviewThreads.Nodes
-	for i := len(threads) - 1; i >= 0; i-- {
-		t := threads[i]
-		if t.IsResolved {
-			continue
-		}
+	src := m.pr.Data.Enriched.ReviewThreads.Nodes
+	out := make([]data.ReviewThread, 0, len(src))
+	for i := len(src) - 1; i >= 0; i-- {
+		t := src[i]
 		if len(t.Comments.Nodes) == 0 {
 			continue
 		}
-		return t.Comments.Nodes[0].DatabaseId
+		out = append(out, t)
 	}
-	return 0
+	return out
+}
+
+// focusedThread returns the thread under the cursor on the Activity
+// tab, or zero-value when no threads exist.
+func (m *Model) focusedThread() (data.ReviewThread, bool) {
+	threads := m.allThreads()
+	if len(threads) == 0 {
+		return data.ReviewThread{}, false
+	}
+	idx := m.threadCursorIdx
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(threads) {
+		idx = len(threads) - 1
+	}
+	return threads[idx], true
+}
+
+// pickReplyTarget returns the root-comment databaseId of the focused
+// thread (the one R/X act on). 0 when there's nothing to reply to.
+func (m *Model) pickReplyTarget() int {
+	t, ok := m.focusedThread()
+	if !ok {
+		return 0
+	}
+	return t.Comments.Nodes[0].DatabaseId
+}
+
+// SetThreadCursorAtLine snaps the activity-tab thread cursor to the
+// thread that contains the given absolute line of the rendered Activity
+// body. Used for "cursor follows scroll" behavior — the parent passes
+// in the line at the vertical midpoint of the viewport (YOffset +
+// Height/2) and the cursor lands on whichever thread the user is
+// looking at. Returns true when the cursor index actually changed.
+//
+// Walks allThreads() in cursor order (most-recent first → array index
+// ascending). A line is considered "in" thread T if T's start offset
+// is the largest one ≤ targetLine — i.e., the line falls between T's
+// start and the next thread's start. Falls back to index 0 (top
+// thread) when nothing matches; that covers the case where the user
+// is scrolled above the first thread (looking at the activity title).
+//
+// Using the viewport's MIDPOINT (rather than its top) means that when
+// two threads fit on the screen at once, both can be focused as the
+// user scrolls — at top of viewport you're in the first, scroll a few
+// lines and the midpoint crosses into the second.
+func (m *Model) SetThreadCursorAtLine(targetLine int) bool {
+	threads := m.allThreads()
+	if len(threads) == 0 || m.threadLineOffsets == nil {
+		return false
+	}
+	best := 0
+	bestOffset := -1
+	for i, t := range threads {
+		off, ok := m.threadLineOffsets[t.Id]
+		if !ok {
+			continue
+		}
+		if off <= targetLine && off > bestOffset {
+			best = i
+			bestOffset = off
+		}
+	}
+	if best == m.threadCursorIdx {
+		return false
+	}
+	m.threadCursorIdx = best
+	return true
+}
+
+// FocusedThreadLineOffset returns the line offset of the focused
+// thread within the most-recently-rendered Activity body. Returns 0
+// when there is no focused thread or when renderActivity hasn't run
+// yet (no offsets recorded). Used by the parent's n/N handler to
+// scroll the sidebar viewport to the focused thread.
+func (m *Model) FocusedThreadLineOffset() int {
+	t, ok := m.focusedThread()
+	if !ok {
+		return 0
+	}
+	if m.threadLineOffsets == nil {
+		return 0
+	}
+	return m.threadLineOffsets[t.Id]
+}
+
+// SetReplyViewportHeight stashes the sidebar viewport's content height
+// so renderActivity can pad above the focused thread to bottom-align
+// the reply input. Called by the parent in openSidebarForReply just
+// before syncSidebar.
+func (m *Model) SetReplyViewportHeight(h int) {
+	m.replyViewportHeight = h
+}
+
+// FocusedThreadEndLine returns the line just past the focused thread
+// block's last rendered line — including the inline reply input when
+// reply mode is on. Used to bottom-align the input in the viewport so
+// the input sits at the screen's bottom and the tail of the thread
+// fills the space above it.
+func (m *Model) FocusedThreadEndLine() int {
+	t, ok := m.focusedThread()
+	if !ok {
+		return 0
+	}
+	if m.threadLineEnds == nil {
+		return 0
+	}
+	return m.threadLineEnds[t.Id]
+}
+
+// FocusedThread returns the GraphQL node id and resolved state of the
+// thread under the activity-tab cursor. ok=false when there's no
+// eligible thread (no PR, not enriched, no threads with comments).
+// Used to plumb the id through the prompt-confirmation pipeline and
+// to decide between resolve and unresolve mutations.
+func (m *Model) FocusedThread() (id string, isResolved bool, ok bool) {
+	t, found := m.focusedThread()
+	if !found {
+		return "", false, false
+	}
+	return t.Id, t.IsResolved, true
+}
+
+// MoveThreadCursor advances the activity-tab thread cursor by delta and
+// clamps to the bounds of allThreads(). No-op when there are no
+// threads.
+func (m *Model) MoveThreadCursor(delta int) {
+	threads := m.allThreads()
+	if len(threads) == 0 {
+		m.threadCursorIdx = 0
+		return
+	}
+	idx := m.threadCursorIdx + delta
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(threads) {
+		idx = len(threads) - 1
+	}
+	m.threadCursorIdx = idx
 }
 
 func (m *Model) repoRef() cmpcontroller.RepoRef {

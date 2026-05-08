@@ -736,6 +736,59 @@ func ReplyToReviewComment(
 	})
 }
 
+// ResolveReviewThread marks an inline-review thread as resolved via the
+// GraphQL `resolveReviewThread` mutation. Takes the thread's GraphQL
+// node id (from `ReviewThread.Id`), not a comment databaseId.
+func ResolveReviewThread(
+	ctx *context.ProgramContext,
+	section SectionIdentifier,
+	pr data.RowData,
+	threadId string,
+) tea.Cmd {
+	prNumber := pr.GetNumber()
+	return fireTask(ctx, GitHubTask{
+		Id: buildTaskId("pr_resolve_thread", prNumber),
+		Args: []string{
+			"api", "graphql",
+			"-f", "query=mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { id isResolved } } }",
+			"-f", "id=" + threadId,
+		},
+		Section:      section,
+		StartText:    fmt.Sprintf("Resolving review thread on PR #%d", prNumber),
+		FinishedText: fmt.Sprintf("Resolved review thread on PR #%d", prNumber),
+		Msg: func(c *exec.Cmd, err error) tea.Msg {
+			return UpdatePRMsg{PrNumber: prNumber}
+		},
+	})
+}
+
+// UnresolveReviewThread re-opens a previously resolved thread. Same shape
+// as ResolveReviewThread; needed for the X-toggle behavior so a press on
+// an already-resolved thread reverses the action instead of being a
+// no-op.
+func UnresolveReviewThread(
+	ctx *context.ProgramContext,
+	section SectionIdentifier,
+	pr data.RowData,
+	threadId string,
+) tea.Cmd {
+	prNumber := pr.GetNumber()
+	return fireTask(ctx, GitHubTask{
+		Id: buildTaskId("pr_unresolve_thread", prNumber),
+		Args: []string{
+			"api", "graphql",
+			"-f", "query=mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { id isResolved } } }",
+			"-f", "id=" + threadId,
+		},
+		Section:      section,
+		StartText:    fmt.Sprintf("Unresolving review thread on PR #%d", prNumber),
+		FinishedText: fmt.Sprintf("Unresolved review thread on PR #%d", prNumber),
+		Msg: func(c *exec.Cmd, err error) tea.Msg {
+			return UpdatePRMsg{PrNumber: prNumber}
+		},
+	})
+}
+
 // splitOwnerRepo splits "owner/repo" into its two halves. Returns
 // (owner, name); if no slash is present, both fall back to the whole
 // string and the input as the owner — Jenkins POST then errors out

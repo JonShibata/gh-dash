@@ -33,6 +33,8 @@ type PRKeyMap struct {
 	RerunFailedChecks    key.Binding
 	JenkinsRerun         key.Binding
 	ReviewThreadReply    key.Binding
+	NextReviewThread     key.Binding
+	PrevReviewThread     key.Binding
 }
 
 var PRKeys = PRKeyMap{
@@ -124,12 +126,20 @@ var PRKeys = PRKeyMap{
 		key.WithKeys("J"),
 		key.WithHelp("J", "trigger Jenkins rerun"),
 	),
-	// Capital R because lowercase r is universally "refresh" across gh-dash.
-	// v1 replies to the most-recent unresolved thread; a thread cursor is
-	// a follow-up.
+	// Lowercase r overrides the universal Refresh binding ONLY when the
+	// prview is in fullscreen on the Activity tab with a focused thread
+	// (see ui.go). Outside that scope, r remains Refresh.
 	ReviewThreadReply: key.NewBinding(
-		key.WithKeys("R"),
-		key.WithHelp("R", "reply to last review thread"),
+		key.WithKeys("r"),
+		key.WithHelp("r", "reply to focused review thread"),
+	),
+	NextReviewThread: key.NewBinding(
+		key.WithKeys("n"),
+		key.WithHelp("n", "next review thread"),
+	),
+	PrevReviewThread: key.NewBinding(
+		key.WithKeys("N"),
+		key.WithHelp("N", "previous review thread"),
 	),
 }
 
@@ -157,6 +167,8 @@ func PRFullHelp() []key.Binding {
 		PRKeys.RerunFailedChecks,
 		PRKeys.JenkinsRerun,
 		PRKeys.ReviewThreadReply,
+		PRKeys.NextReviewThread,
+		PRKeys.PrevReviewThread,
 	}
 }
 
