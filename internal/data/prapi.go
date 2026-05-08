@@ -53,12 +53,22 @@ type EnrichedPullRequestData struct {
 	Labels             PRLabels  `graphql:"labels(first: 6)"`
 	Assignees          Assignees `graphql:"assignees(first: 3)"`
 	Repository         Repository
-	Commits            LastCommitWithStatusChecks `graphql:"commits(last: 1)"`
-	AllCommits         AllCommits                 `graphql:"allCommits: commits(last: 100)"`
-	Comments           CommentsWithBody           `graphql:"comments(last: 50, orderBy: { field: UPDATED_AT, direction: DESC })"`
-	ReviewThreads      ReviewThreadsWithComments  `graphql:"reviewThreads(last: 50)"`
-	ReviewRequests     ReviewRequests             `graphql:"reviewRequests(last: 100)"`
-	Reviews            Reviews                    `graphql:"reviews(last: 100)"`
+	Commits LastCommitWithStatusChecks `graphql:"commits(last: 1)"`
+	// Trimmed from last:100. Commits tab renders the list with status
+	// stats; >30 commits in a single PR is rare and bumping this is a
+	// per-tick rate-limit cost on auto-refresh.
+	AllCommits AllCommits `graphql:"allCommits: commits(last: 30)"`
+	// Trimmed from last:50. Activity tab shows newest first; 20 covers
+	// the typical visible window. If a PR genuinely has more, a future
+	// "load more" path can paginate.
+	Comments      CommentsWithBody          `graphql:"comments(last: 20, orderBy: { field: UPDATED_AT, direction: DESC })"`
+	ReviewThreads ReviewThreadsWithComments `graphql:"reviewThreads(last: 30)"`
+	// Trimmed from last:100. ReviewRequests rarely exceeds 20 in
+	// practice; the over-fetch was wasteful on every enrichment.
+	ReviewRequests ReviewRequests `graphql:"reviewRequests(last: 20)"`
+	// Trimmed from last:100. Reviews tab shows recent reviews; 30 is
+	// plenty for nearly all PRs.
+	Reviews            Reviews `graphql:"reviews(last: 30)"`
 	SuggestedReviewers []SuggestedReviewer
 	Files              ChangedFiles `graphql:"files(first: 5)"`
 }
@@ -149,8 +159,7 @@ type CheckRun struct {
 	// FI Tests posts a markdown table of per-job results). Lives directly
 	// on CheckRun in the GraphQL schema — there is NO nested `output`
 	// object, despite the parallel REST shape suggesting otherwise.
-	// Cheap to fetch — populated for every check, parsed only when needed.
-	Summary graphql.String
+	Summary    graphql.String
 	CheckSuite struct {
 		Creator struct {
 			Login graphql.String
@@ -353,17 +362,19 @@ type Reviews struct {
 	Nodes      []Review
 }
 
+type ReviewThread struct {
+	Id           string
+	IsOutdated   bool
+	IsResolved   bool
+	OriginalLine int
+	StartLine    int
+	Line         int
+	Path         string
+	Comments     ReviewComments `graphql:"comments(first: 20)"`
+}
+
 type ReviewThreadsWithComments struct {
-	Nodes []struct {
-		Id           string
-		IsOutdated   bool
-		IsResolved   bool
-		OriginalLine int
-		StartLine    int
-		Line         int
-		Path         string
-		Comments     ReviewComments `graphql:"comments(first: 20)"`
-	}
+	Nodes []ReviewThread
 }
 
 type ChangedFile struct {
@@ -601,12 +612,15 @@ func FetchPullRequests(query string, limit int, pageInfo *PageInfo) (PullRequest
 		"limit":     graphql.Int(limit),
 		"endCursor": (*graphql.String)(endCursor),
 	}
-	log.Debug("Fetching PRs", "query", query, "limit", limit, "endCursor", endCursor)
+	start := time.Now()
+	log.Info("FetchPullRequests start", "query", query, "limit", limit)
 	err = client.Query("SearchPullRequests", &queryResult, variables)
+	elapsed := time.Since(start)
 	if err != nil {
+		log.Error("FetchPullRequests failed", "query", query, "elapsed_ms", elapsed.Milliseconds(), "err", err)
 		return PullRequestsResponse{}, err
 	}
-	log.Info("Successfully fetched PRs", "count", queryResult.Search.IssueCount)
+	log.Info("FetchPullRequests done", "query", query, "elapsed_ms", elapsed.Milliseconds(), "count", queryResult.Search.IssueCount)
 
 	prs := make([]PullRequestData, 0, len(queryResult.Search.Nodes))
 	for _, node := range queryResult.Search.Nodes {
@@ -641,12 +655,15 @@ func FetchPullRequest(prUrl string) (EnrichedPullRequestData, error) {
 	variables := map[string]any{
 		"url": githubv4.URI{URL: parsedUrl},
 	}
-	log.Debug("Fetching PR", "url", prUrl)
+	start := time.Now()
+	log.Info("FetchPullRequest start", "url", prUrl)
 	err = client.Query("FetchPullRequest", &queryResult, variables)
+	elapsed := time.Since(start)
 	if err != nil {
+		log.Error("FetchPullRequest failed", "url", prUrl, "elapsed_ms", elapsed.Milliseconds(), "err", err)
 		return EnrichedPullRequestData{}, err
 	}
-	log.Info("Successfully fetched PR", "url", prUrl)
+	log.Info("FetchPullRequest done", "url", prUrl, "elapsed_ms", elapsed.Milliseconds())
 
 	return queryResult.Resource.PullRequest, nil
 }

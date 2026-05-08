@@ -157,12 +157,31 @@ func (m *Model) ScrollToTop() {
 	m.viewport.GotoTop()
 }
 
+// ScrollToLine sets the viewport's vertical offset to the given absolute
+// line number. Used by the prview's n/N thread navigation to bring the
+// focused thread to the top of the visible area without losing the user's
+// place on other actions (j/k still scrolls one line).
+func (m *Model) ScrollToLine(line int) {
+	if line < 0 {
+		line = 0
+	}
+	m.viewport.SetYOffset(line)
+}
+
 func (m *Model) ScrollToBottom() {
 	m.viewport.GotoBottom()
 }
 
 func (m *Model) YOffset() int {
 	return m.viewport.YOffset()
+}
+
+// ViewportHeight returns the number of visible content lines in the
+// sidebar's viewport. Used by the activity-tab thread cursor to find
+// which thread sits under the viewport's vertical midpoint as the
+// user scrolls.
+func (m *Model) ViewportHeight() int {
+	return m.viewport.Height()
 }
 
 func (m *Model) ScrollToPercent(percent float64) {

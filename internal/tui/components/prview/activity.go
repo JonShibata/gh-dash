@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/cmpcontroller"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/constants"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/markdown"
 	"github.com/dlvhdr/gh-dash/v4/internal/utils"
@@ -18,11 +18,13 @@ import (
 type RenderedActivity struct {
 	UpdatedAt      time.Time
 	RenderedString string
+	// ThreadId is non-empty when this activity is a review thread.
+	// Used to record the thread's line offset in the final rendered
+	// output so n/N can scroll the focused thread to the top.
+	ThreadId string
 }
 
 func (m *Model) renderActivity() string {
-	width := m.getIndentedContentWidth()
-	markdownRenderer := markdown.GetMarkdownRenderer(width)
 	bodyStyle := lipgloss.NewStyle()
 
 	var activities []RenderedActivity
@@ -51,6 +53,10 @@ func (m *Model) renderActivity() string {
 	// diff-hunk header) rather than as flat per-comment entries. Sorting
 	// is by the *root* comment's UpdatedAt so a late reply doesn't reorder
 	// the whole thread.
+	focusedId := ""
+	if t, ok := m.focusedThread(); ok {
+		focusedId = t.Id
+	}
 	for _, thread := range m.pr.Data.Enriched.ReviewThreads.Nodes {
 		visible := make([]data.ReviewComment, 0, len(thread.Comments.Nodes))
 		for _, c := range thread.Comments.Nodes {
@@ -62,13 +68,15 @@ func (m *Model) renderActivity() string {
 		if len(visible) == 0 {
 			continue
 		}
-		rendered, err := m.renderReviewThread(thread.Path, thread.Line, thread.IsResolved, visible, markdownRenderer)
+		focused := focusedId != "" && thread.Id == focusedId
+		rendered, err := m.renderReviewThread(thread.Path, thread.Line, thread.IsResolved, focused, visible)
 		if err != nil {
 			continue
 		}
 		activities = append(activities, RenderedActivity{
 			UpdatedAt:      visible[0].UpdatedAt,
 			RenderedString: rendered,
+			ThreadId:       thread.Id,
 		})
 	}
 
@@ -84,7 +92,7 @@ func (m *Model) renderActivity() string {
 	}
 
 	for _, comment := range comments {
-		renderedComment, err := m.renderComment(comment, markdownRenderer)
+		renderedComment, err := m.renderComment(comment)
 		if err != nil {
 			continue
 		}
@@ -98,7 +106,7 @@ func (m *Model) renderActivity() string {
 		if isHidden(review.Author.Login) {
 			continue
 		}
-		renderedReview, err := m.renderReview(review, markdownRenderer)
+		renderedReview, err := m.renderReview(review)
 		if err != nil {
 			continue
 		}
@@ -113,15 +121,62 @@ func (m *Model) renderActivity() string {
 	})
 
 	body := ""
+	// Reset the offset maps every render IN PLACE. View() is a value
+	// receiver; assigning a new map (`m.threadLineOffsets = map{}`)
+	// would only update the local copy and the parent's offsets would
+	// stay empty. Maps are reference types, so deletions persist.
+	for k := range m.threadLineOffsets {
+		delete(m.threadLineOffsets, k)
+	}
+	for k := range m.threadLineEnds {
+		delete(m.threadLineEnds, k)
+	}
 	if len(activities) == 0 {
 		body = renderEmptyState()
 	} else {
-		var renderedActivities []string
-		for _, activity := range activities {
-			renderedActivities = append(renderedActivities, activity.RenderedString)
-		}
 		title := m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(
 			fmt.Sprintf("%s  %d comments", constants.CommentsIcon, len(activities)))
+		// Offsets must be in *viewport* coordinates: View() prepends
+		// viewHeader() before the tab body, and YOffset() measures the
+		// full output. Without this adjustment the cursor-follow logic
+		// would compare a viewport offset (with header) against a
+		// body-relative offset (without) and never match anything past
+		// the first thread.
+		cum := lipgloss.Height(m.viewHeader()) + lipgloss.Height(title)
+		// In reply mode, pad above the focused thread block so its end
+		// lands at (or below) the viewport's bottom edge. Without this,
+		// when the focused thread is near the document top, the viewport
+		// can't scroll high enough to put the input at the bottom (X
+		// would have to be negative) and the input renders in the upper
+		// half of the screen with blank space below.
+		inReplyMode := m.editor.Mode() == cmpcontroller.ModeReplyReview
+		focusedId := ""
+		if inReplyMode {
+			if t, ok := m.focusedThread(); ok {
+				focusedId = t.Id
+			}
+		}
+		var renderedActivities []string
+		for _, activity := range activities {
+			rendered := activity.RenderedString
+			padBefore := 0
+			if focusedId != "" && activity.ThreadId == focusedId && m.replyViewportHeight > 0 {
+				naturalEnd := cum + lipgloss.Height(rendered)
+				if naturalEnd < m.replyViewportHeight {
+					padBefore = m.replyViewportHeight - naturalEnd
+					rendered = strings.Repeat("\n", padBefore) + rendered
+				}
+			}
+			cum += padBefore
+			if activity.ThreadId != "" {
+				m.threadLineOffsets[activity.ThreadId] = cum
+			}
+			renderedActivities = append(renderedActivities, rendered)
+			cum += lipgloss.Height(activity.RenderedString)
+			if activity.ThreadId != "" {
+				m.threadLineEnds[activity.ThreadId] = cum
+			}
+		}
 		body = lipgloss.JoinVertical(lipgloss.Left, renderedActivities...)
 		body = lipgloss.JoinVertical(lipgloss.Left, title, body)
 	}
@@ -143,7 +198,6 @@ type comment struct {
 
 func (m *Model) renderComment(
 	comment comment,
-	markdownRenderer glamour.TermRenderer,
 ) (string, error) {
 	width := m.getIndentedContentWidth()
 	authorAndTime := lipgloss.NewStyle().
@@ -174,7 +228,7 @@ func (m *Model) renderComment(
 	}
 
 	body := lineCleanupRegex.ReplaceAllString(comment.Body, "")
-	body, err := markdownRenderer.Render(body)
+	body, err := markdown.Render(width, body)
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -185,10 +239,9 @@ func (m *Model) renderComment(
 
 func (m *Model) renderReview(
 	review data.Review,
-	markdownRenderer glamour.TermRenderer,
 ) (string, error) {
 	header := m.renderReviewHeader(review)
-	body, err := markdownRenderer.Render(review.Body)
+	body, err := markdown.Render(m.getIndentedContentWidth(), review.Body)
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
@@ -217,18 +270,26 @@ func (m *Model) renderReviewThread(
 	path string,
 	line int,
 	resolved bool,
+	focused bool,
 	comments []data.ReviewComment,
-	markdownRenderer glamour.TermRenderer,
 ) (string, error) {
 	width := m.getIndentedContentWidth()
 	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
 
-	// Header: ╭─ path:line  [resolved]
-	loc := fmt.Sprintf("╭─ %s:%d", path, line)
+	// Header: ▶ path:line  [resolved]   (▶ marks the focused thread)
+	prefix := "╭─ "
+	if focused {
+		prefix = "▶ "
+	}
+	loc := fmt.Sprintf("%s%s:%d", prefix, path, line)
 	if resolved {
 		loc += "  [resolved]"
 	}
-	header := faint.Width(width).Render(loc)
+	headerStyle := faint
+	if focused {
+		headerStyle = lipgloss.NewStyle().Foreground(m.ctx.Theme.PrimaryText).Bold(true)
+	}
+	header := headerStyle.Width(width).Render(loc)
 
 	// Diff hunk lifted from the *root* comment — every comment in the
 	// thread carries the same hunk; we render it once, faintly, as
@@ -261,14 +322,31 @@ func (m *Model) renderReviewThread(
 			faint.Render(utils.TimeElapsed(c.UpdatedAt)),
 		)
 		body := lineCleanupRegex.ReplaceAllString(c.Body, "")
-		rendered, err := markdownRenderer.Render(body)
+		rendered, err := markdown.Render(width, body)
 		if err != nil {
 			return "", err
 		}
 		blocks = append(blocks, who, rendered)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, append([]string{header}, blocks...)...), nil
+	all := append([]string{header}, blocks...)
+	if focused {
+		// Reply input renders inline below the focused thread's
+		// conversation when active — so the user can see the thread
+		// they're typing a reply to. Outside reply mode, show the
+		// action hint instead.
+		if reply := m.EditorReplyView(); reply != "" {
+			all = append(all, reply)
+		} else {
+			action := "x resolve"
+			if resolved {
+				action = "x unresolve"
+			}
+			hint := faint.Render("  n/N next/prev  r reply  " + action)
+			all = append(all, hint)
+		}
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, all...), nil
 }
 
 func (m *Model) renderReviewDecision(decision string) string {

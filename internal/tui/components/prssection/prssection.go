@@ -3,6 +3,7 @@ package prssection
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -115,6 +116,18 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 						cmd = tasks.RerunFailedChecksOnPR(m.Ctx, sid, pr)
 					case "jenkinsRerun":
 						cmd = tasks.TriggerJenkinsRerun(m.Ctx, sid, pr)
+					default:
+						// Thread-resolve actions encode the GraphQL
+						// thread id after a colon: "resolveThread:<id>"
+						// or "unresolveThread:<id>". Parsed here because
+						// prssection is the prompt dispatcher and
+						// per-action data isn't otherwise plumbed
+						// through.
+						if tid, ok := strings.CutPrefix(action, "resolveThread:"); ok && tid != "" {
+							cmd = tasks.ResolveReviewThread(m.Ctx, sid, pr, tid)
+						} else if tid, ok := strings.CutPrefix(action, "unresolveThread:"); ok && tid != "" {
+							cmd = tasks.UnresolveReviewThread(m.Ctx, sid, pr, tid)
+						}
 					}
 				}
 

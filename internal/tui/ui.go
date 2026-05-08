@@ -233,6 +233,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Esc/Backspace exits back to the split layout. Enter/PageUp/
 		// PageDown/Toggle keys still flow through the main switch below.
 		if m.detailFullscreen {
+			onActivity := m.prView.SelectedTab() == prview.ActivityTab
+			tid, isResolved, hasThread := "", false, false
+			if onActivity {
+				tid, isResolved, hasThread = m.prView.FocusedThread()
+			}
 			switch {
 			case key.Matches(msg, m.keys.ExitDetail):
 				m.detailFullscreen = false
@@ -240,11 +245,74 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncMainContentDimensions()
 				m.syncProgramContext()
 				return m, m.syncSidebar()
+			case key.Matches(msg, m.keys.PrevSection):
+				// h/l (and arrow keys) drive PR-tab navigation in
+				// split mode. With the list hidden, repurpose them to
+				// move between prview tabs (Overview/Activity/Commits/
+				// …) — the same thing [/] does, with the more intuitive
+				// h/l keys.
+				m.prView.PrevTab()
+				m.syncSidebar()
+				return m, nil
+			case key.Matches(msg, m.keys.NextSection):
+				m.prView.NextTab()
+				m.syncSidebar()
+				return m, nil
+			case onActivity && hasThread && key.Matches(msg, keys.PRKeys.ReviewThreadReply):
+				// r → reply to focused thread. Wins over the global
+				// Refresh binding only inside this scope. Uses the
+				// reply-specific opener so we stay on the Activity tab
+				// and the input renders inline beneath the focused
+				// thread (instead of jumping to Overview).
+				return m, m.openSidebarForReply(m.prView.SetIsReplyingToReview)
+			case onActivity && hasThread && key.Matches(msg, keys.PRKeys.Close):
+				// x → resolve / unresolve focused thread. Wins over the
+				// global Close binding only inside this scope. Toggle
+				// based on the thread's current IsResolved.
+				if currSection != nil {
+					action := "resolveThread:" + tid
+					if isResolved {
+						action = "unresolveThread:" + tid
+					}
+					return m, m.promptConfirmation(currSection, action)
+				}
+				return m, nil
+			case onActivity && key.Matches(msg, keys.PRKeys.NextReviewThread):
+				// n → move thread cursor forward and scroll the focused
+				// thread to the top of the viewport. Re-syncs sidebar
+				// content first so the line offsets reflect the new
+				// cursor highlight, then applies the scroll.
+				m.prView.MoveThreadCursor(1)
+				m.syncSidebar()
+				m.sidebar.ScrollToLine(m.prView.FocusedThreadLineOffset())
+				return m, nil
+			case onActivity && key.Matches(msg, keys.PRKeys.PrevReviewThread):
+				m.prView.MoveThreadCursor(-1)
+				m.syncSidebar()
+				m.sidebar.ScrollToLine(m.prView.FocusedThreadLineOffset())
+				return m, nil
 			case key.Matches(msg, m.keys.Up),
 				key.Matches(msg, m.keys.Down),
 				key.Matches(msg, m.keys.FirstLine),
-				key.Matches(msg, m.keys.LastLine):
+				key.Matches(msg, m.keys.LastLine),
+				key.Matches(msg, m.keys.PageDown),
+				key.Matches(msg, m.keys.PageUp):
+				// Apply the scroll first, then on the Activity tab snap
+				// the thread cursor to whatever thread is now at the top
+				// of the viewport. Re-syncs sidebar content only when the
+				// cursor actually changed (avoids needless re-renders on
+				// every j/k press inside a single thread).
 				m.sidebar, sidebarCmd = m.sidebar.Update(msg)
+				if onActivity {
+					// Use the viewport's vertical midpoint, not its top
+					// edge, so multiple threads visible on the same
+					// screen can each become focused as the midpoint
+					// crosses their boundaries.
+					mid := m.sidebar.YOffset() + m.sidebar.ViewportHeight()/2
+					if m.prView.SetThreadCursorAtLine(mid) {
+						m.syncSidebar()
+					}
+				}
 				return m, sidebarCmd
 			}
 		}
@@ -802,8 +870,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			scmd := m.updateSection(msg.SectionId, msg.SectionType, msg.Msg)
 			cmds = append(cmds, scmd)
 
-			syncCmd := m.syncSidebar()
-			cmds = append(cmds, syncCmd)
+			// When the *current* section's row data updates (initial
+			// load or refetch), the cursor's underlying PR may now be a
+			// different PR than what was last viewed. Trigger
+			// onViewedRowChanged so EnrichCurrRow fires and the prview
+			// gets fresh enriched data. Without this, initial enrichment
+			// only fires on the next auto-refresh tick — adding seconds
+			// (or minutes, depending on interval) to the perceived
+			// load time before the Activity/Checks tabs populate.
+			if msg.SectionId == m.currSectionId {
+				newKey := m.viewedRowKey()
+				if newKey != m.lastViewedRowKey {
+					m.lastViewedRowKey = newKey
+					cmds = append(cmds, m.onViewedRowChanged())
+				} else {
+					cmds = append(cmds, m.syncSidebar())
+				}
+			} else {
+				cmds = append(cmds, m.syncSidebar())
+			}
 		}
 
 	case prview.EnrichedPrMsg:
@@ -890,6 +975,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case section.SectionMsg:
 		cmd = m.updateRelevantSection(msg)
 
+		log.Info("SectionMsg", "msgId", msg.Id, "currSectionId", m.currSectionId, "match", msg.Id == m.currSectionId)
 		if msg.Id == m.currSectionId {
 			// Distinguish "cursor moved" from "data refreshed under the
 			// stationary cursor". The former should reset sidebar tab +
@@ -897,6 +983,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// NOT, otherwise every auto-refresh tick yanks the user back
 			// to the Overview tab and scroll-top.
 			newKey := m.viewedRowKey()
+			log.Info("SectionMsg current section", "newKey", newKey, "lastViewedRowKey", m.lastViewedRowKey, "willTriggerEnrich", newKey != m.lastViewedRowKey)
 			if newKey != m.lastViewedRowKey {
 				m.lastViewedRowKey = newKey
 				cmds = append(cmds, m.onViewedRowChanged())
@@ -1321,6 +1408,32 @@ func (m *Model) openSidebarForInput(setFunc func(bool) tea.Cmd) tea.Cmd {
 	return cmd
 }
 
+// openSidebarForReply opens the review-thread reply input WITHOUT
+// switching to the Overview tab and bottom-aligns the input box in the
+// viewport: the input sits at the screen's bottom and the tail of the
+// focused thread fills the space above it.
+//
+// Mechanism: passes the viewport height to prview before re-rendering,
+// so renderActivity can pad above the focused thread block when the
+// thread is near the document top. After padding, the focused thread's
+// end equals the viewport height (or more), so scroll target = end -
+// vpHeight is non-negative and the input lands at the bottom edge.
+func (m *Model) openSidebarForReply(setFunc func(bool) tea.Cmd) tea.Cmd {
+	m.sidebar.IsOpen = true
+	cmd := setFunc(true)
+	m.syncMainContentDimensions()
+	vpH := m.sidebar.ViewportHeight()
+	m.prView.SetReplyViewportHeight(vpH)
+	m.syncSidebar()
+	end := m.prView.FocusedThreadEndLine()
+	target := end - vpH
+	if target < 0 {
+		target = 0
+	}
+	m.sidebar.ScrollToLine(target)
+	return cmd
+}
+
 func (m *Model) backToNotification() tea.Cmd {
 	if m.notificationView.GetSubjectPR() == nil && m.notificationView.GetSubjectIssue() == nil {
 		return nil
@@ -1363,8 +1476,13 @@ func (m *Model) syncSidebar() tea.Cmd {
 		m.prView.SetRow(row)
 		m.prView.SetWidth(width)
 		m.sidebar.SetContent(m.prView.View())
-		// Scroll to bottom if in input mode to keep inputbox visible
-		if m.prView.IsTextInputBoxFocused() {
+		// Scroll to bottom if in input mode to keep inputbox visible —
+		// EXCEPT for reply-review mode, where the input renders inline
+		// at the focused thread's position (not at the document end).
+		// openSidebarForReply handles the scroll for that case; calling
+		// ScrollToBottom here on every keystroke would override that
+		// position and shove the input toward the viewport top.
+		if m.prView.IsTextInputBoxFocused() && !m.prView.GetIsReplyingToReview() {
 			m.sidebar.ScrollToBottom()
 		}
 	case *data.IssueData:
