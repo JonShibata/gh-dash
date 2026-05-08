@@ -148,87 +148,95 @@ var CustomDarkStyleConfig = ansi.StyleConfig{
 			},
 			Margin: uintPtr(0),
 		},
+		// Code-block syntax highlighting palette: GitHub PrettyLights
+		// "light" (the same theme github.com renders by default).
+		// Pairs with the #F6F8FA bg in codepad.go so a code fence in
+		// a PR body looks like the same fence on github.com — dark
+		// navy/red/blue tokens on a light background. The previous
+		// dark-on-dark palette was iterated through eight bg shades
+		// before the user noted they wanted to match GitHub directly.
 		Chroma: &ansi.Chroma{
 			Text: ansi.StylePrimitive{
-				Color: stringPtr("#C4C4C4"),
+				Color: stringPtr("#1F2328"),
 			},
 			Error: ansi.StylePrimitive{
-				Color:           stringPtr("#F1F1F1"),
-				BackgroundColor: stringPtr("#F05B5B"),
+				Color:           stringPtr("#F6F8FA"),
+				BackgroundColor: stringPtr("#82071E"),
 			},
 			Comment: ansi.StylePrimitive{
-				Color: stringPtr("#8B949E"),
+				Color: stringPtr("#6E7781"),
 			},
 			CommentPreproc: ansi.StylePrimitive{
-				Color: stringPtr("#FF875F"),
+				Color: stringPtr("#CF222E"),
 			},
 			Keyword: ansi.StylePrimitive{
-				Color: stringPtr("#00AAFF"),
+				Color: stringPtr("#CF222E"),
 			},
 			KeywordReserved: ansi.StylePrimitive{
-				Color: stringPtr("#FF5FD2"),
+				Color: stringPtr("#CF222E"),
 			},
 			KeywordNamespace: ansi.StylePrimitive{
-				Color: stringPtr("#FF5F87"),
+				Color: stringPtr("#CF222E"),
 			},
 			KeywordType: ansi.StylePrimitive{
-				Color: stringPtr("#6E6ED8"),
+				Color: stringPtr("#953800"),
 			},
 			Operator: ansi.StylePrimitive{
-				Color: stringPtr("#EF8080"),
+				Color: stringPtr("#CF222E"),
 			},
 			Punctuation: ansi.StylePrimitive{
-				Color: stringPtr("#E8E8A8"),
+				Color: stringPtr("#1F2328"),
 			},
 			Name: ansi.StylePrimitive{
-				Color: stringPtr("#C4C4C4"),
+				Color: stringPtr("#1F2328"),
 			},
 			NameBuiltin: ansi.StylePrimitive{
-				Color: stringPtr("#FF8EC7"),
+				Color: stringPtr("#0550AE"),
 			},
 			NameTag: ansi.StylePrimitive{
-				Color: stringPtr("#B083EA"),
+				Color: stringPtr("#116329"),
 			},
 			NameAttribute: ansi.StylePrimitive{
-				Color: stringPtr("#7A7AE6"),
+				Color: stringPtr("#0550AE"),
 			},
 			NameClass: ansi.StylePrimitive{
-				Color:     stringPtr("#F1F1F1"),
-				Underline: boolPtr(true),
-				Bold:      boolPtr(true),
+				Color: stringPtr("#953800"),
+				Bold:  boolPtr(true),
 			},
 			NameDecorator: ansi.StylePrimitive{
-				Color: stringPtr("#FFFF87"),
+				Color: stringPtr("#0550AE"),
 			},
 			NameFunction: ansi.StylePrimitive{
-				Color: stringPtr("#00D787"),
+				Color: stringPtr("#8250DF"),
 			},
 			LiteralNumber: ansi.StylePrimitive{
-				Color: stringPtr("#6EEFC0"),
+				Color: stringPtr("#0550AE"),
 			},
 			LiteralString: ansi.StylePrimitive{
-				Color: stringPtr("#C69669"),
+				Color: stringPtr("#0A3069"),
 			},
 			LiteralStringEscape: ansi.StylePrimitive{
-				Color: stringPtr("#AFFFD7"),
+				Color: stringPtr("#0A3069"),
 			},
 			GenericDeleted: ansi.StylePrimitive{
-				Color: stringPtr("#FD5B5B"),
+				Color:           stringPtr("#82071E"),
+				BackgroundColor: stringPtr("#FFEBE9"),
 			},
 			GenericEmph: ansi.StylePrimitive{
 				Italic: boolPtr(true),
 			},
 			GenericInserted: ansi.StylePrimitive{
-				Color: stringPtr("#00D787"),
+				Color:           stringPtr("#116329"),
+				BackgroundColor: stringPtr("#DAFBE1"),
 			},
 			GenericStrong: ansi.StylePrimitive{
 				Bold: boolPtr(true),
 			},
 			GenericSubheading: ansi.StylePrimitive{
-				Color: stringPtr("#8B949E"),
+				Color: stringPtr("#6E7781"),
 			},
 			Background: ansi.StylePrimitive{
-				BackgroundColor: stringPtr("#2D333B"),
+				BackgroundColor: stringPtr("#F6F8FA"),
 			},
 		},
 	},
