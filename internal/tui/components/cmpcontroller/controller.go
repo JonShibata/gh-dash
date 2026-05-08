@@ -46,6 +46,12 @@ const (
 	SuggestionNone SuggestionKind = iota
 	SuggestionUsers
 	SuggestionLabels
+	// SuggestionUsersAndTeams populates the suggestion list with both
+	// repo-mentionable users AND the owner-org's teams (formatted as
+	// `org/slug`). Used for the request-review flow where `gh pr edit
+	// --add-reviewer` accepts both forms; deliberately not used for
+	// assign because GitHub rejects teams as PR assignees.
+	SuggestionUsersAndTeams
 )
 
 type FetchPolicy int
@@ -95,6 +101,15 @@ type RepoUsersFetchFailedMsg struct {
 	Err error
 }
 
+// RepoUsersAndTeamsFetchedMsg is the result of the combined
+// users+teams fetch used by SuggestionUsersAndTeams. Either Users or
+// Teams may be empty (e.g. when the repo owner is a personal
+// account, Teams will be empty).
+type RepoUsersAndTeamsFetchedMsg struct {
+	Users []data.User
+	Teams []data.Team
+}
+
 type Controller struct {
 	ctx               *context.ProgramContext
 	inputBox          inputbox.Model
@@ -108,6 +123,7 @@ type Controller struct {
 	hideOnEmpty       bool
 	repoLabels        []data.Label
 	repoUsers         []data.User
+	repoTeams         []data.Team
 }
 
 func New(ctx *context.ProgramContext, opts inputbox.ModelOpts) Controller {
@@ -214,6 +230,17 @@ func (c *Controller) Enter(opts EnterOptions) tea.Cmd {
 		} else if opts.EnterFetch != FetchNone {
 			cmds = append([]tea.Cmd{c.fetchUsers(opts.EnterFetch == FetchWithLoading)}, cmds...)
 		}
+	case SuggestionUsersAndTeams:
+		users, hasUsers := data.CachedRepoUsers(opts.Repo.NameWithOwner)
+		teams, hasTeams := data.CachedRepoTeams(opts.Repo.NameWithOwner)
+		if hasUsers && hasTeams {
+			c.repoUsers = users
+			c.repoTeams = teams
+			c.cmp.SetSuggestions(userAndTeamSuggestions(users, teams))
+			c.showSuggestionsFromCurrentContext()
+		} else if opts.EnterFetch != FetchNone {
+			cmds = append([]tea.Cmd{c.fetchUsersAndTeams(opts.EnterFetch == FetchWithLoading)}, cmds...)
+		}
 	case SuggestionLabels:
 		if labels, ok := data.CachedRepoLabels(opts.Repo.NameWithOwner); ok {
 			c.repoLabels = labels
@@ -267,6 +294,16 @@ func (c *Controller) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case RepoUsersFetchFailedMsg:
 		return c.cmp.SetFetchError(msg.Err), true
 
+	case RepoUsersAndTeamsFetchedMsg:
+		c.repoUsers = msg.Users
+		c.repoTeams = msg.Teams
+		c.cmp.SetSuggestions(userAndTeamSuggestions(msg.Users, msg.Teams))
+		cmds = append(cmds, c.cmp.SetFetchSuccess())
+		if c.mode == ModeRequestReview {
+			c.showSuggestionsFromCurrentContext()
+		}
+		return tea.Batch(cmds...), true
+
 	case cmp.FetchSuggestionsRequestedMsg:
 		if !c.Active() || c.suggestionKind == SuggestionNone {
 			return nil, false
@@ -277,6 +314,8 @@ func (c *Controller) Update(msg tea.Msg) (tea.Cmd, bool) {
 		switch c.suggestionKind {
 		case SuggestionUsers:
 			return c.fetchUsers(true), true
+		case SuggestionUsersAndTeams:
+			return c.fetchUsersAndTeams(true), true
 		case SuggestionLabels:
 			return c.fetchLabels(true), true
 		default:
@@ -297,6 +336,8 @@ func (c *Controller) Update(msg tea.Msg) (tea.Cmd, bool) {
 			switch c.suggestionKind {
 			case SuggestionUsers:
 				return c.fetchUsers(true), true
+			case SuggestionUsersAndTeams:
+				return c.fetchUsersAndTeams(true), true
 			case SuggestionLabels:
 				return c.fetchLabels(true), true
 			}
@@ -377,6 +418,11 @@ func (c *Controller) clearRelevantCache() {
 		if c.repo.NameWithOwner != "" {
 			data.ClearRepoUserCache(c.repo.NameWithOwner)
 		}
+	case SuggestionUsersAndTeams:
+		if c.repo.NameWithOwner != "" {
+			data.ClearRepoUserCache(c.repo.NameWithOwner)
+			data.ClearRepoTeamCache(c.repo.NameWithOwner)
+		}
 	case SuggestionLabels:
 		if c.repo.NameWithOwner != "" {
 			data.ClearRepoLabelCache(c.repo.NameWithOwner)
@@ -443,6 +489,32 @@ func (c Controller) fetchLabels(showLoading bool) tea.Cmd {
 	return fetchCmd
 }
 
+// fetchUsersAndTeams is the SuggestionUsersAndTeams equivalent of
+// fetchUsers — runs both fetches sequentially in a single goroutine
+// so the combined result lands as one msg (avoiding two separate
+// re-renders of the suggestion list while typing). Team fetch is best-
+// effort: a fetch error (personal account, no org-member access) is
+// swallowed inside data.FetchRepoTeams and we ship users only.
+func (c Controller) fetchUsersAndTeams(showLoading bool) tea.Cmd {
+	var spinnerTickCmd tea.Cmd
+	if showLoading {
+		spinnerTickCmd = c.cmp.SetFetchLoading()
+	}
+	owner, name := c.repo.Owner, c.repo.Name
+	fetchCmd := func() tea.Msg {
+		users, err := data.FetchRepoUsers(owner, name)
+		if err != nil {
+			return RepoUsersFetchFailedMsg{Err: err}
+		}
+		teams, _ := data.FetchRepoTeams(owner, name) // silent on error
+		return RepoUsersAndTeamsFetchedMsg{Users: users, Teams: teams}
+	}
+	if spinnerTickCmd != nil {
+		return tea.Batch(spinnerTickCmd, fetchCmd)
+	}
+	return fetchCmd
+}
+
 func (c Controller) fetchUsers(showLoading bool) tea.Cmd {
 	var spinnerTickCmd tea.Cmd
 	if showLoading {
@@ -469,6 +541,36 @@ func userSuggestions(users []data.User) []cmp.Suggestion {
 		suggestions = append(suggestions, cmp.Suggestion{
 			Value:  user.Login,
 			Detail: strings.TrimSpace(user.Name),
+		})
+	}
+	return suggestions
+}
+
+// userAndTeamSuggestions builds the combined autocomplete list for
+// the request-review flow. Teams come first (typically a much smaller
+// set, and the team a reviewer cares about is usually known by name),
+// then users. Team Value is "org/slug" so on selection the inserted
+// token is exactly what `gh pr edit --add-reviewer` accepts; the
+// "(team)" suffix in Detail makes the entry visually distinct from a
+// user with the same prefix.
+func userAndTeamSuggestions(users []data.User, teams []data.Team) []cmp.Suggestion {
+	suggestions := make([]cmp.Suggestion, 0, len(users)+len(teams))
+	for _, t := range teams {
+		detail := strings.TrimSpace(t.Name)
+		if detail == "" {
+			detail = "team"
+		} else {
+			detail += " (team)"
+		}
+		suggestions = append(suggestions, cmp.Suggestion{
+			Value:  t.Reviewer(),
+			Detail: detail,
+		})
+	}
+	for _, u := range users {
+		suggestions = append(suggestions, cmp.Suggestion{
+			Value:  u.Login,
+			Detail: strings.TrimSpace(u.Name),
 		})
 	}
 	return suggestions

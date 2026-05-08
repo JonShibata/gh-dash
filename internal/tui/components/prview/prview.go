@@ -861,7 +861,7 @@ func (m *Model) SetIsRequestingReview(isRequesting bool) tea.Cmd {
 		Prompt:                           constants.RequestReviewPrompt,
 		Source:                           cmp.WhitespaceSource{},
 		Repo:                             m.repoRef(),
-		SuggestionKind:                   cmpcontroller.SuggestionUsers,
+		SuggestionKind:                   cmpcontroller.SuggestionUsersAndTeams,
 		EnterFetch:                       cmpcontroller.FetchSilent,
 		HideAutocompleteWhenContextEmpty: false,
 	})
