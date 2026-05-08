@@ -217,6 +217,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Image-hint probe: when the sidebar is showing a PR and the
+		// user types a digit (or completes a 2-char hint), open the
+		// referenced image in kitty. Returns false when the key isn't a
+		// hint, so non-image keypresses fall through to existing
+		// handlers untouched.
+		if m.sidebar.IsOpen && !m.prView.IsTextInputBoxFocused() {
+			if consumed, target := m.prView.HandleImageHintKey(msg.String()); consumed {
+				if target != nil {
+					return m, prview.DownloadImageCmd(target.URL)
+				}
+				return m, nil
+			}
+		}
+
 		// Handle notification PR/Issue action confirmation
 		if m.notificationView.HasPendingAction() {
 			var action string
@@ -911,6 +925,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			log.Error("failed enriching pr", "err", msg.Err)
 		}
+
+	case prview.ImageReadyMsg:
+		if msg.Err != nil {
+			cmds = append(cmds, m.notifyErr(fmt.Sprintf("Image fetch failed: %v", msg.Err)))
+			break
+		}
+		proc, err := prview.ViewImageProcess(msg.Path)
+		if err != nil {
+			os.Remove(msg.Path)
+			cmds = append(cmds, m.notifyErr(fmt.Sprintf("Viewer failed: %v", err)))
+			break
+		}
+		path := msg.Path
+		cmds = append(cmds, tea.ExecProcess(proc, func(err error) tea.Msg {
+			os.Remove(path)
+			if err != nil {
+				log.Error("image viewer failed", "err", err)
+			}
+			return nil
+		}))
 
 	case notificationPRFetchedMsg:
 		if msg.Err == nil {

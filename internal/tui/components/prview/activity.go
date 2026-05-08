@@ -228,6 +228,7 @@ func (m *Model) renderComment(
 	}
 
 	body := lineCleanupRegex.ReplaceAllString(comment.Body, "")
+	body = m.injectHints(body)
 	body, err := markdown.Render(width, body)
 
 	return lipgloss.JoinVertical(
@@ -241,7 +242,7 @@ func (m *Model) renderReview(
 	review data.Review,
 ) (string, error) {
 	header := m.renderReviewHeader(review)
-	body, err := markdown.Render(m.getIndentedContentWidth(), review.Body)
+	body, err := markdown.Render(m.getIndentedContentWidth(), m.injectHints(review.Body))
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
@@ -322,6 +323,7 @@ func (m *Model) renderReviewThread(
 			faint.Render(utils.TimeElapsed(c.UpdatedAt)),
 		)
 		body := lineCleanupRegex.ReplaceAllString(c.Body, "")
+		body = m.injectHints(body)
 		rendered, err := markdown.Render(width, body)
 		if err != nil {
 			return "", err

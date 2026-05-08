@@ -70,6 +70,19 @@ type Model struct {
 	// Set by SetReplyViewportHeight before syncSidebar in
 	// openSidebarForReply; ignored when reply mode is off.
 	replyViewportHeight int
+	// imageHints is the ordered list of (label, url) pairs for every
+	// image embedded in the current PR's bodies. Rebuilt on PR change
+	// and on every enrich payload swap so auto-refresh ticks pick up
+	// new attachments.
+	imageHints []imageHint
+	// imageURLToHint is the lookup the body rewriter uses to inject
+	// **[label]** markers next to image references. Same data as
+	// imageHints, indexed by URL.
+	imageURLToHint map[string]string
+	// pendingImageHint is the first character of a 2-char hint while
+	// we wait for the second. Cleared on completion, mismatch, or PR
+	// change.
+	pendingImageHint string
 }
 
 // Exported tab names so other packages can compare SelectedTab() without
@@ -571,6 +584,7 @@ func (m *Model) renderSummary() string {
 	// Strip HTML comments from body and cleanup body.
 	body := htmlCommentRegex.ReplaceAllString(m.pr.Data.Primary.Body, "")
 	body = lineCleanupRegex.ReplaceAllString(body, "")
+	body = m.injectHints(body)
 
 	desc := m.ctx.Styles.Common.MainTextStyle.Bold(true).Underline(true).Render(" Summary")
 	title := lipgloss.JoinVertical(
@@ -644,6 +658,7 @@ func (m *Model) SetRow(d *prrow.Data) {
 	if newNumber != prevNumber {
 		m.threadCursorIdx = 0
 	}
+	m.RebuildImageHints()
 }
 
 type EnrichedPrMsg struct {
@@ -923,6 +938,87 @@ func (m *Model) SetEnrichedPR(data data.EnrichedPullRequestData) {
 		m.pr.Data.Enriched = data
 		m.pr.Data.IsEnriched = true
 	}
+	m.RebuildImageHints()
+}
+
+// RebuildImageHints walks the current PR's summary and activity bodies
+// to collect embedded images and assign hint labels. Idempotent —
+// safe to call after every PR-data mutation. Clears any pending hint
+// (the user's in-flight 2-char keystroke is meaningless against a new
+// hint set).
+func (m *Model) RebuildImageHints() {
+	m.pendingImageHint = ""
+	if !m.hasData() {
+		m.imageHints = nil
+		m.imageURLToHint = nil
+		return
+	}
+	bodies := []string{m.pr.Data.Primary.Body}
+	if m.pr.Data.IsEnriched {
+		for _, c := range m.pr.Data.Enriched.Comments.Nodes {
+			bodies = append(bodies, c.Body)
+		}
+		for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
+			for _, c := range t.Comments.Nodes {
+				bodies = append(bodies, c.Body)
+			}
+		}
+	}
+	for _, r := range m.pr.Data.Primary.Reviews.Nodes {
+		bodies = append(bodies, r.Body)
+	}
+	m.imageHints = extractImages(bodies)
+	if len(m.imageHints) == 0 {
+		m.imageURLToHint = nil
+		return
+	}
+	m.imageURLToHint = make(map[string]string, len(m.imageHints))
+	for _, h := range m.imageHints {
+		m.imageURLToHint[h.URL] = h.Label
+	}
+}
+
+// HandleImageHintKey is the dispatcher's entry point for image-hint
+// keys. It owns the pendingImageHint state machine.
+//
+// Returns:
+//   - consumed=true, target!=nil → key completed a hint; caller fires
+//     DownloadImageCmd(target.URL).
+//   - consumed=true, target==nil → key matched a 2-char prefix; caller
+//     swallows the key and waits for the next one.
+//   - consumed=false             → key isn't a hint; caller falls
+//     through to existing handlers.
+func (m *Model) HandleImageHintKey(s string) (bool, *imageHint) {
+	if len(m.imageHints) == 0 || s == "" {
+		return false, nil
+	}
+	candidate := m.pendingImageHint + s
+	for i := range m.imageHints {
+		if m.imageHints[i].Label == candidate {
+			m.pendingImageHint = ""
+			return true, &m.imageHints[i]
+		}
+	}
+	if m.pendingImageHint == "" {
+		for i := range m.imageHints {
+			if len(m.imageHints[i].Label) > 1 && strings.HasPrefix(m.imageHints[i].Label, candidate) {
+				m.pendingImageHint = candidate
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	// Pending was set but no hint matched — abandon the prefix and let
+	// the original key fall through to normal handlers.
+	m.pendingImageHint = ""
+	return false, nil
+}
+
+// injectHints rewrites a markdown body so that recognised images get a
+// visible **[label]** prefix. Pure pass-through when the PR has no
+// images.
+func (m *Model) injectHints(body string) string {
+	return rewriteBodyWithHints(body, m.imageURLToHint)
 }
 
 func (m *Model) GetIsLabeling() bool {
