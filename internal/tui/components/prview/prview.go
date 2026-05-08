@@ -602,8 +602,7 @@ func (m *Model) renderSummary() string {
 		)
 	}
 
-	markdownRenderer := markdown.GetMarkdownRenderer(width)
-	rendered, err := markdownRenderer.Render(body)
+	rendered, err := markdown.Render(width, body)
 	if err != nil {
 		return ""
 	}
