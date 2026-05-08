@@ -74,6 +74,13 @@ type Model struct {
 	// area and hides the section list. Toggled with Enter (in) and
 	// Esc/q/Backspace (out). Only meaningful when a row is selected.
 	detailFullscreen bool
+	// focused tracks whether this terminal window/tab currently has
+	// keyboard focus (per OSC 1004 reporting via tea.FocusMsg/BlurMsg).
+	// Auto-refresh ticks no-op when blurred so background ghd
+	// instances don't burn through the shared GitHub GraphQL rate
+	// limit. Defaults to true — terminals start focused, and BlurMsg
+	// will arrive promptly if not.
+	focused bool
 }
 
 func NewModel(location config.Location) Model {
@@ -83,6 +90,7 @@ func NewModel(location config.Location) Model {
 		sidebar:     sidebar.NewModel(),
 		taskSpinner: taskSpinner,
 		tasks:       map[string]context.Task{},
+		focused:     true,
 	}
 
 	version := "dev"
@@ -867,6 +875,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// EnrichCurrRow no-ops once IsEnriched=true (so checks would go
 		// stale), but RefreshEnrichedCurrRow re-fetches unconditionally
 		// and swaps in place without a "Loading..." flash.
+		//
+		// Skip the actual fetches when this terminal isn't focused —
+		// background ghd instances would otherwise multiply the
+		// shared GitHub GraphQL rate limit by N. The timer keeps
+		// running so we resume on the next tick after focus returns
+		// (and FocusMsg also fires an immediate catch-up fetch).
+		if !m.focused {
+			cmds = append(cmds, m.doRefreshAtInterval())
+			break
+		}
 		cmds = append(cmds, m.softRefreshExistingSections()...)
 		cmds = append(cmds, m.prView.RefreshEnrichedCurrRow(), m.doRefreshAtInterval())
 
@@ -1037,10 +1055,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case execProcessFinishedMsg, tea.FocusMsg:
+	case execProcessFinishedMsg:
 		if currSection != nil {
 			cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
 		}
+
+	case tea.FocusMsg:
+		// Window regained focus — flip the gate AND fire a fresh fetch
+		// immediately so the user sees current data instead of waiting
+		// for the next tick interval.
+		m.focused = true
+		if currSection != nil {
+			cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
+		}
+		cmds = append(cmds, m.prView.RefreshEnrichedCurrRow())
+
+	case tea.BlurMsg:
+		// Window lost focus — gate off auto-refresh fetches. The
+		// existing tick timer keeps running (the case intervalRefresh
+		// handler skips the actual fetches when m.focused is false),
+		// so when focus returns we resume on the same cadence without
+		// having to restart the timer.
+		m.focused = false
 
 	case tea.MouseClickMsg:
 		if msg.Button != tea.MouseLeft {
