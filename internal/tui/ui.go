@@ -382,6 +382,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sidebar.ScrollToTop()
 			cmd = m.syncSidebar()
 
+		case m.ctx.View == config.PRsView && currRowData != nil &&
+			key.Matches(msg, keys.PRKeys.RequestReview):
+			// `p` is universally TogglePreview, but inside PRsView with
+			// a selected PR we repurpose it for "people" → request
+			// review. The override is contextual: outside PRsView (or
+			// without a selected row), `p` still toggles the preview.
+			return m, m.openSidebarForPRInput(m.prView.SetIsRequestingReview)
+
 		case key.Matches(msg, m.keys.TogglePreview):
 			m.sidebar.IsOpen = !m.sidebar.IsOpen
 			m.syncMainContentDimensions()
@@ -685,6 +693,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 						case prview.PRActionReviewThreadReply:
 							return m, m.openSidebarForPRInput(m.prView.SetIsReplyingToReview)
+
+						case prview.PRActionRequestReview:
+							return m, m.openSidebarForPRInput(m.prView.SetIsRequestingReview)
 
 						case prview.PRActionDiff:
 							if pr := m.notificationView.GetSubjectPR(); pr != nil {

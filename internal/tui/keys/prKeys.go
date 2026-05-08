@@ -35,6 +35,7 @@ type PRKeyMap struct {
 	ReviewThreadReply    key.Binding
 	NextReviewThread     key.Binding
 	PrevReviewThread     key.Binding
+	RequestReview        key.Binding
 }
 
 var PRKeys = PRKeyMap{
@@ -141,6 +142,13 @@ var PRKeys = PRKeyMap{
 		key.WithKeys("N"),
 		key.WithHelp("N", "previous review thread"),
 	),
+	// Repurposes universal `p` (TogglePreview) when in PRsView with a row.
+	// Mnemonic: "people". Wired in ui.go to fire BEFORE TogglePreview so
+	// the override is contextual; outside PRsView `p` still toggles preview.
+	RequestReview: key.NewBinding(
+		key.WithKeys("p"),
+		key.WithHelp("p", "request review (people)"),
+	),
 }
 
 func PRFullHelp() []key.Binding {
@@ -169,6 +177,7 @@ func PRFullHelp() []key.Binding {
 		PRKeys.ReviewThreadReply,
 		PRKeys.NextReviewThread,
 		PRKeys.PrevReviewThread,
+		PRKeys.RequestReview,
 	}
 }
 

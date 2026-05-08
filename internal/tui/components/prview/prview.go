@@ -160,6 +160,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tasks.ReplyToReviewComment(m.ctx, sid, m.pr.Data.Primary, target, value)
+
+		case cmpcontroller.ModeRequestReview:
+			usernames := cmp.AllWords(value)
+			if len(usernames) > 0 {
+				return m, tasks.RequestReviewers(m.ctx, sid, m.pr.Data.Primary, usernames)
+			}
+			return m, nil
 		}
 	}
 
@@ -813,6 +820,38 @@ func (m *Model) userAssignedToPr(login string) bool {
 		}
 	}
 	return false
+}
+
+// GetIsRequestingReview / SetIsRequestingReview mirror the Assign
+// setters: open the editor in ModeRequestReview and let the user type
+// whitespace-separated usernames. Submit (Ctrl+D) dispatches
+// tasks.RequestReviewers which calls `gh pr edit --add-reviewer`.
+func (m *Model) GetIsRequestingReview() bool {
+	return m.editor.Mode() == cmpcontroller.ModeRequestReview
+}
+
+func (m *Model) SetIsRequestingReview(isRequesting bool) tea.Cmd {
+	if m.pr == nil {
+		return nil
+	}
+
+	if !isRequesting {
+		if m.editor.Mode() == cmpcontroller.ModeRequestReview {
+			m.editor.Exit()
+		}
+		return nil
+	}
+
+	cmd := m.editor.Enter(cmpcontroller.EnterOptions{
+		Mode:                             cmpcontroller.ModeRequestReview,
+		Prompt:                           constants.RequestReviewPrompt,
+		Source:                           cmp.WhitespaceSource{},
+		Repo:                             m.repoRef(),
+		SuggestionKind:                   cmpcontroller.SuggestionUsers,
+		EnterFetch:                       cmpcontroller.FetchSilent,
+		HideAutocompleteWhenContextEmpty: false,
+	})
+	return cmd
 }
 
 func (m *Model) GetIsUnassigning() bool {

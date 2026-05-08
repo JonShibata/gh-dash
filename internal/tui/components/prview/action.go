@@ -27,6 +27,7 @@ const (
 	PRActionSummaryViewMore
 	PRActionApproveWorkflows
 	PRActionReviewThreadReply
+	PRActionRequestReview
 )
 
 // PRAction represents an action to be performed on a PR.
@@ -72,6 +73,8 @@ func MsgToAction(msg tea.Msg) *PRAction {
 		return &PRAction{Type: PRActionApproveWorkflows}
 	case key.Matches(keyMsg, keys.PRKeys.ReviewThreadReply):
 		return &PRAction{Type: PRActionReviewThreadReply}
+	case key.Matches(keyMsg, keys.PRKeys.RequestReview):
+		return &PRAction{Type: PRActionRequestReview}
 	}
 
 	return nil

@@ -736,6 +736,36 @@ func ReplyToReviewComment(
 	})
 }
 
+// RequestReviewers adds one or more users as requested reviewers on the
+// PR via `gh pr edit --add-reviewer`. Mirrors AssignPR's shape: one
+// `--add-reviewer USER` flag per username (gh accepts repeats). Returns
+// an UpdatePRMsg so the section can refetch reviewer state on completion.
+func RequestReviewers(
+	ctx *context.ProgramContext,
+	section SectionIdentifier,
+	pr data.RowData,
+	usernames []string,
+) tea.Cmd {
+	prNumber := pr.GetNumber()
+	args := []string{
+		"pr", "edit", fmt.Sprint(prNumber),
+		"-R", pr.GetRepoNameWithOwner(),
+	}
+	for _, u := range usernames {
+		args = append(args, "--add-reviewer", u)
+	}
+	return fireTask(ctx, GitHubTask{
+		Id:           buildTaskId("pr_request_review", prNumber),
+		Args:         args,
+		Section:      section,
+		StartText:    fmt.Sprintf("Requesting review on PR #%d from %s", prNumber, usernames),
+		FinishedText: fmt.Sprintf("Review requested on PR #%d from %s", prNumber, usernames),
+		Msg: func(c *exec.Cmd, err error) tea.Msg {
+			return UpdatePRMsg{PrNumber: prNumber}
+		},
+	})
+}
+
 // ResolveReviewThread marks an inline-review thread as resolved via the
 // GraphQL `resolveReviewThread` mutation. Takes the thread's GraphQL
 // node id (from `ReviewThread.Id`), not a comment databaseId.

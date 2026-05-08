@@ -95,6 +95,7 @@ const (
 	ApprovalPrompt = "Approve with comment" + Ellipsis
 	LabelPrompt    = "Add/remove labels (comma-separated)" + Ellipsis
 	ReplyPrompt    = "Reply to review thread" + Ellipsis
+	RequestReviewPrompt = "Request review from users (whitespace-separated)" + Ellipsis
 
 	Logo = `▜▔▚▐▔▌▚▔▐ ▌
 ▟▁▞▐▔▌▁▚▐▔▌`
