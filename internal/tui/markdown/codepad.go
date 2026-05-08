@@ -15,14 +15,17 @@ import (
 // stamps onto every code token. Used as a substring marker on the
 // line — without the trailing 'm' so it still matches when chroma
 // follows the bg parameter with foreground/style parameters in the
-// same SGR sequence (e.g. "\x1b[48;2;45;51;59;38;2;0;170;255m").
+// same SGR sequence (e.g. "\x1b[48;2;246;248;250;38;2;5;80;174m").
 //
-// Color #2D333B (45,51,59) is GitHub's "Dark Dimmed" code-block bg —
-// dark enough to read as a code area on a dark theme, light enough
-// (vs. #373737 which the user reported as "almost black") that the
-// existing chroma fg colors retain contrast.
-const codeBgMarker = "\x1b[48;2;45;51;59"
-const codeBgHex = "#2D333B"
+// Match GitHub Web's code-block presentation: light bg (#F6F8FA, the
+// `bgColor.muted` from PrettyLights) with dark navy/blue/red fg
+// tokens. Earlier attempts at dark-on-dark variants
+// (#373737 → #808080) all suffered from either bg blending with the
+// terminal canvas or chroma fg colors being too dim against grey;
+// the user requested matching github.com directly. Paired chroma fg
+// palette lives in theme.go (PrettyLights light syntax colors).
+const codeBgMarker = "\x1b[48;2;246;248;250"
+const codeBgHex = "#F6F8FA"
 
 // codeChromaFormatter is the registered name we hand to glamour via
 // WithChromaFormatter. The custom formatter wraps every chroma token
@@ -51,7 +54,7 @@ func formatCodeBackgrounded(w io.Writer, style *chroma.Style, it chroma.Iterator
 	for token := it(); token != chroma.EOF; token = it() {
 		entry := style.Get(token.Type)
 		var sgr strings.Builder
-		sgr.WriteString("\x1b[48;2;45;51;59") // bg #2D333B
+		sgr.WriteString("\x1b[48;2;246;248;250") // bg #F6F8FA (GitHub light)
 		if entry.Bold == chroma.Yes {
 			sgr.WriteString(";1")
 		}
@@ -62,15 +65,14 @@ func formatCodeBackgrounded(w io.Writer, style *chroma.Style, it chroma.Iterator
 			sgr.WriteString(";4")
 		}
 		// Always emit a foreground. Some token types resolve to a
-		// chroma entry without an explicit Colour, which would fall
-		// through to the terminal's default fg — often dark on dark
-		// themes, rendering as black-on-black against our bg. The
-		// fallback (#C9D1D9, GitHub Dark Dimmed text color) keeps
-		// unstyled identifiers readable.
+		// chroma entry without an explicit Colour; falling through to
+		// the terminal's default fg (typically light on a dark theme)
+		// would render as light-on-light against our light bg. The
+		// fallback is GitHub's default text color #1F2328.
 		if entry.Colour.IsSet() {
 			fmt.Fprintf(&sgr, ";38;2;%d;%d;%d", entry.Colour.Red(), entry.Colour.Green(), entry.Colour.Blue())
 		} else {
-			sgr.WriteString(";38;2;201;209;217")
+			sgr.WriteString(";38;2;31;35;40") // #1F2328
 		}
 		sgr.WriteByte('m')
 		prefix := sgr.String()
