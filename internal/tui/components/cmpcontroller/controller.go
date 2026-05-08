@@ -34,6 +34,10 @@ const (
 	// tasks.ReplyToReviewComment instead of tasks.CommentOnPR — the
 	// REST endpoint and target id are different.
 	ModeReplyReview
+	// ModeRequestReview asks the user for one or more usernames to add as
+	// requested reviewers on the current PR. Whitespace-separated input,
+	// same user-suggestion source as Assign.
+	ModeRequestReview
 )
 
 type SuggestionKind int
@@ -255,7 +259,7 @@ func (c *Controller) Update(msg tea.Msg) (tea.Cmd, bool) {
 		c.cmp.SetSuggestions(userSuggestions(msg.Users))
 		cmds = append(cmds, c.cmp.SetFetchSuccess())
 		if c.mode == ModeComment || c.mode == ModeApprove || c.mode == ModeAssign ||
-			c.mode == ModeReplyReview {
+			c.mode == ModeReplyReview || c.mode == ModeRequestReview {
 			c.showSuggestionsFromCurrentContext()
 		}
 		return tea.Batch(cmds...), true
@@ -412,7 +416,7 @@ func (c Controller) showSuggestionsFromCurrentContext() {
 
 func (c Controller) usesAutocomplete() bool {
 	switch c.mode {
-	case ModeComment, ModeApprove, ModeAssign, ModeLabel, ModeReplyReview:
+	case ModeComment, ModeApprove, ModeAssign, ModeLabel, ModeReplyReview, ModeRequestReview:
 		return true
 	default:
 		return false
