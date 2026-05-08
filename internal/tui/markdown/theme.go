@@ -134,6 +134,15 @@ var CustomDarkStyleConfig = ansi.StyleConfig{
 	},
 	CodeBlock: ansi.StyleCodeBlock{
 		StyleBlock: ansi.StyleBlock{
+			// Indent and bg are handled in padCodeBlockLines (the
+			// post-render pass) because glamour's IndentWriter styles
+			// indents with the *parent* block's StylePrimitive (which
+			// has no bg), and chroma's TTY formatters strip global
+			// background. Leaving Indent at 0 here means glamour
+			// writes code lines flush-left; the post-processor then
+			// prepends a 2-col bg stripe and pads each line out to
+			// the wrap width with the same bg — yielding one
+			// continuous framed region per fenced block.
 			StylePrimitive: ansi.StylePrimitive{
 				Color: stringPtr("244"),
 			},
@@ -148,7 +157,7 @@ var CustomDarkStyleConfig = ansi.StyleConfig{
 				BackgroundColor: stringPtr("#F05B5B"),
 			},
 			Comment: ansi.StylePrimitive{
-				Color: stringPtr("#676767"),
+				Color: stringPtr("#8B949E"),
 			},
 			CommentPreproc: ansi.StylePrimitive{
 				Color: stringPtr("#FF875F"),
@@ -216,10 +225,10 @@ var CustomDarkStyleConfig = ansi.StyleConfig{
 				Bold: boolPtr(true),
 			},
 			GenericSubheading: ansi.StylePrimitive{
-				Color: stringPtr("#777777"),
+				Color: stringPtr("#8B949E"),
 			},
 			Background: ansi.StylePrimitive{
-				BackgroundColor: stringPtr("#373737"),
+				BackgroundColor: stringPtr("#2D333B"),
 			},
 		},
 	},

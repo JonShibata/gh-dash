@@ -24,9 +24,11 @@ func InitializeMarkdownStyle(hasDarkBackground bool) {
 }
 
 func GetMarkdownRenderer(width int) glamour.TermRenderer {
+	registerCodeFormatter()
 	markdownRenderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(*markdownStyle),
 		glamour.WithWordWrap(width),
+		glamour.WithChromaFormatter(codeChromaFormatter),
 	)
 	if err != nil || markdownRenderer == nil {
 		// Return a fallback renderer that just returns input unchanged
@@ -63,10 +65,11 @@ func Render(width int, body string) (string, error) {
 	cacheMu.RUnlock()
 
 	r := GetMarkdownRenderer(width)
-	out, err := r.Render(body)
+	out, err := r.Render(rewriteDetails(body))
 	if err != nil {
 		return out, err
 	}
+	out = padCodeBlockLines(out, width)
 
 	cacheMu.Lock()
 	cache[key] = out
