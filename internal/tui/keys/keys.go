@@ -10,6 +10,28 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/config"
 )
 
+// applyRebind mutates b in place from a config Keybinding entry.
+// Treats `key: none` (or an empty string) as "disable this binding"
+// — the binding is marked disabled (so key.Matches always returns
+// false and help.FullHelp filters it out) and its keys/help are
+// cleared so no stale "none" label leaks into rendered output.
+// Otherwise: standard SetKeys + SetHelp behavior.
+//
+// helpDesc is computed by the caller because notification/universal
+// rebinds also fall back to kb.Command when kb.Name is empty; PR/
+// issue/branch use kb.Name only.
+func applyRebind(b *key.Binding, kb config.Keybinding, helpDesc string) {
+	if kb.Key == "" || kb.Key == "none" {
+		b.SetKeys()
+		b.SetHelp("", "")
+		b.SetEnabled(false)
+		return
+	}
+	b.SetKeys(kb.Key)
+	b.SetHelp(kb.Key, helpDesc)
+	b.SetEnabled(true)
+}
+
 // NotificationSubjectType indicates what type of content is being viewed in the notifications view
 type NotificationSubjectType int
 
@@ -336,15 +358,13 @@ func rebindUniversal(universal []config.Keybinding) error {
 			return fmt.Errorf("unknown built-in universal key: '%s'", kb.Builtin)
 		}
 
-		key.SetKeys(kb.Key)
-
 		helpDesc := key.Help().Desc
 		if kb.Name != "" {
 			helpDesc = kb.Name
 		} else if kb.Command != "" {
 			helpDesc = kb.Command
 		}
-		key.SetHelp(kb.Key, helpDesc)
+		applyRebind(key, kb, helpDesc)
 	}
 
 	return nil

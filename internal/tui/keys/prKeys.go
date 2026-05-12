@@ -256,13 +256,11 @@ func rebindPRKeys(keys []config.Keybinding) error {
 			return fmt.Errorf("unknown built-in pr key: '%s'", prKey.Builtin)
 		}
 
-		key.SetKeys(prKey.Key)
-
 		helpDesc := key.Help().Desc
 		if prKey.Name != "" {
 			helpDesc = prKey.Name
 		}
-		key.SetHelp(prKey.Key, helpDesc)
+		applyRebind(key, prKey, helpDesc)
 	}
 
 	return nil

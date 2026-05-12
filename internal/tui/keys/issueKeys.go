@@ -121,13 +121,11 @@ func rebindIssueKeys(keys []config.Keybinding) error {
 			return fmt.Errorf("unknown built-in issue key: '%s'", issueKey.Builtin)
 		}
 
-		key.SetKeys(issueKey.Key)
-
 		helpDesc := key.Help().Desc
 		if issueKey.Name != "" {
 			helpDesc = issueKey.Name
 		}
-		key.SetHelp(issueKey.Key, helpDesc)
+		applyRebind(key, issueKey, helpDesc)
 	}
 
 	return nil
