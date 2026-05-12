@@ -3,12 +3,34 @@ package markdown
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
+	"os"
+	"strings"
 	"sync"
 
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/ansi"
 	"charm.land/glamour/v2/styles"
+	"charm.land/lipgloss/v2"
 )
+
+// dumpRender writes the given rendered output to a per-stage tag file
+// when GHD_DUMP_RENDER=1. Used to diagnose code-block bg padding by
+// comparing what glamour produces vs. what padCodeBlockLines mutates.
+func dumpRender(tag string, width int, rendered string) {
+	if os.Getenv("GHD_DUMP_RENDER") != "1" {
+		return
+	}
+	dump := strings.Builder{}
+	dump.WriteString(fmt.Sprintf("=== tag=%s width=%d ===\n", tag, width))
+	for i, line := range strings.Split(rendered, "\n") {
+		visW := lipgloss.Width(line)
+		bg := strings.Contains(line, "\x1b[48;2;234;238;242")
+		literal := strings.ReplaceAll(line, "\x1b", "\\x1b")
+		dump.WriteString(fmt.Sprintf("%3d w=%d bg=%v : %s\n", i, visW, bg, literal))
+	}
+	_ = os.WriteFile("/tmp/gh-dash-render-"+tag+".dump", []byte(dump.String()), 0o644)
+}
 
 var markdownStyle *ansi.StyleConfig
 
@@ -69,7 +91,9 @@ func Render(width int, body string) (string, error) {
 	if err != nil {
 		return out, err
 	}
+	dumpRender("pre-pad", width, out)
 	out = padCodeBlockLines(out, width)
+	dumpRender("post-pad", width, out)
 
 	cacheMu.Lock()
 	cache[key] = out

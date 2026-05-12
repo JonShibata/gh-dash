@@ -15,17 +15,15 @@ import (
 // stamps onto every code token. Used as a substring marker on the
 // line — without the trailing 'm' so it still matches when chroma
 // follows the bg parameter with foreground/style parameters in the
-// same SGR sequence (e.g. "\x1b[48;2;246;248;250;38;2;5;80;174m").
+// same SGR sequence (e.g. "\x1b[48;2;234;238;242;38;2;5;80;174m").
 //
-// Match GitHub Web's code-block presentation: light bg (#F6F8FA, the
-// `bgColor.muted` from PrettyLights) with dark navy/blue/red fg
-// tokens. Earlier attempts at dark-on-dark variants
-// (#373737 → #808080) all suffered from either bg blending with the
-// terminal canvas or chroma fg colors being too dim against grey;
-// the user requested matching github.com directly. Paired chroma fg
-// palette lives in theme.go (PrettyLights light syntax colors).
-const codeBgMarker = "\x1b[48;2;246;248;250"
-const codeBgHex = "#F6F8FA"
+// #EAEEF2 is GitHub's "neutral.subtle" — slightly darker than the
+// PrettyLights default code-block bg (#F6F8FA, which read as too
+// light against the dark gh-dash canvas) but lighter than the
+// previous attempt at #D8DEE4 (a touch too dark). Paired chroma
+// palette lives in theme.go.
+const codeBgMarker = "\x1b[48;2;234;238;242"
+const codeBgHex = "#EAEEF2"
 
 // codeChromaFormatter is the registered name we hand to glamour via
 // WithChromaFormatter. The custom formatter wraps every chroma token
@@ -54,7 +52,7 @@ func formatCodeBackgrounded(w io.Writer, style *chroma.Style, it chroma.Iterator
 	for token := it(); token != chroma.EOF; token = it() {
 		entry := style.Get(token.Type)
 		var sgr strings.Builder
-		sgr.WriteString("\x1b[48;2;246;248;250") // bg #F6F8FA (GitHub light)
+		sgr.WriteString("\x1b[48;2;234;238;242") // bg #EAEEF2
 		if entry.Bold == chroma.Yes {
 			sgr.WriteString(";1")
 		}
@@ -92,13 +90,19 @@ func formatCodeBackgrounded(w io.Writer, style *chroma.Style, it chroma.Iterator
 	return nil
 }
 
-// padCodeBlockLines extends the code-block background out to the wrap
-// width on every code-block line, and prepends a 2-column bg-colored
-// indent stripe. The marker for "this line is part of a code block" is
-// the presence of codeBgMarker — emitted by formatCodeBackgrounded on
-// every chroma token. Glamour's own indent comes from the parent
-// block's style (Document/Paragraph) which has no bg, so we suppress
-// glamour-side indentation in the theme and reproduce it here.
+// padCodeBlockLines rebuilds each code-block line so the bg covers the
+// full wrap width: a 2-col bg-stripe indent on the left, the chroma
+// "core" (the styled tokens emitted by formatCodeBackgrounded), and
+// bg-colored padding on the right out to wrap width. Both leading
+// and trailing wrap-padding that glamour adds (per-cell styled-fg
+// spaces with no bg, e.g. `\x1b[38;5;234m \x1b[m` repeats) are
+// discarded — that padding leaves no-bg gutters on either side of the
+// chroma content if we naively trimmed only spaces.
+//
+// "Core" is identified as the substring from the FIRST bg marker to
+// the END of the last bg-styled run on the line (i.e. the closing
+// reset that follows the last bg token). Anything before/after that
+// is glamour's wrap framing.
 func padCodeBlockLines(rendered string, width int) string {
 	if width <= 0 || !strings.Contains(rendered, codeBgMarker) {
 		return rendered
@@ -108,20 +112,38 @@ func padCodeBlockLines(rendered string, width int) string {
 	indentStripe := bg.Render(indent)
 	lines := strings.Split(rendered, "\n")
 	for i, line := range lines {
-		if !strings.Contains(line, codeBgMarker) {
+		firstBg := strings.Index(line, codeBgMarker)
+		if firstBg < 0 {
 			continue
 		}
-		// Glamour already pads code-block lines out to the wrap
-		// width with plain (uncolored) spaces. Strip those, then
-		// re-pad with bg-colored spaces so the trailing gutter
-		// also reads as part of the block.
-		trimmed := strings.TrimRight(line, " ")
-		w := lipgloss.Width(trimmed) + len(indent)
-		pad := ""
-		if w < width {
-			pad = bg.Render(strings.Repeat(" ", width-w))
+		// End of the last bg-styled run on the line: starting from
+		// the LAST bg marker, skip its SGR (up through the next 'm'),
+		// then find the FIRST reset that follows. Prefer the explicit
+		// `\x1b[0m`; fall back to the bare `\x1b[m` form.
+		lastBg := strings.LastIndex(line, codeBgMarker)
+		afterMarker := line[lastBg+len(codeBgMarker):]
+		sgrEnd := strings.IndexByte(afterMarker, 'm')
+		if sgrEnd < 0 {
+			continue
 		}
-		lines[i] = indentStripe + trimmed + pad
+		tail := afterMarker[sgrEnd+1:]
+		var resetEnd int
+		if r := strings.Index(tail, "\x1b[0m"); r >= 0 {
+			resetEnd = r + len("\x1b[0m")
+		} else if r := strings.Index(tail, "\x1b[m"); r >= 0 {
+			resetEnd = r + len("\x1b[m")
+		} else {
+			resetEnd = len(tail)
+		}
+		coreEnd := lastBg + len(codeBgMarker) + sgrEnd + 1 + resetEnd
+		core := line[firstBg:coreEnd]
+		coreVisW := lipgloss.Width(core)
+		padW := width - len(indent) - coreVisW
+		pad := ""
+		if padW > 0 {
+			pad = bg.Render(strings.Repeat(" ", padW))
+		}
+		lines[i] = indentStripe + core + pad
 	}
 	return strings.Join(lines, "\n")
 }
