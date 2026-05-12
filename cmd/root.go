@@ -6,11 +6,13 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	slog "log"
 	"os"
 	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -25,6 +27,7 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/constants"
 	dctx "github.com/dlvhdr/gh-dash/v4/internal/tui/context"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/markdown"
 )
 
 var (
@@ -197,6 +200,12 @@ func init() {
 		"passing this flag will allow writing debug output to debug.log",
 	)
 
+	rootCmd.Flags().Int(
+		"dump-render",
+		0,
+		"DEBUG: read a markdown body from stdin, render it through the full prview pipeline at the given width (and the corresponding sidebar/Padding/viewport wrapping), then write the raw bytes (with ANSI escapes literal) to stdout and exit. Used to inspect what bytes the binary actually emits for code-block backgrounds.",
+	)
+
 	rootCmd.Flags().String(
 		"cpuprofile",
 		"",
@@ -211,6 +220,19 @@ func init() {
 	)
 
 	rootCmd.Run = func(_ *cobra.Command, args []string) {
+		// Debug pipeline dump short-circuits the TUI startup. Reads
+		// markdown body from stdin, renders through the same path as
+		// prview.renderSummary (markdown.Render → outer Width wrap →
+		// outer Padding wrapper → simulated viewport.View Width wrap),
+		// then prints each output line with ANSI escapes shown
+		// literally so we can inspect the bytes the binary actually
+		// emits to the terminal.
+		dumpWidth, _ := rootCmd.Flags().GetInt("dump-render")
+		if dumpWidth > 0 {
+			runDumpRender(dumpWidth)
+			return
+		}
+
 		var repo string
 		repos := config.IsFeatureEnabled(config.FF_REPO_VIEW)
 		if repos && len(args) > 0 {
@@ -252,5 +274,49 @@ func init() {
 		if _, err := p.Run(); err != nil {
 			log.Fatal("Failed starting the TUI", err)
 		}
+	}
+}
+
+// runDumpRender mirrors the rendering pipeline that prview.renderSummary
+// drives at runtime: markdown.Render(width, body) → inner Width wrap →
+// outer Padding wrapper (the +ContentPadding around body) → simulated
+// viewport.View Width wrap. It reads the markdown body from stdin and
+// writes one line per output line to stdout, with ANSI escapes shown
+// literally (\x1b[...) so we can see the SGR sequences and the
+// background-padded trailing spaces (or lack thereof). Exits when done.
+func runDumpRender(width int) {
+	markdown.InitializeMarkdownStyle(true)
+	bodyBytes, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read stdin:", err)
+		os.Exit(1)
+	}
+	body := string(bodyBytes)
+	if strings.TrimSpace(body) == "" {
+		body = "Sample\n\n```xml\n<filter>\n  <acl>foo</acl>\n</filter>\n```\n\nDone."
+		fmt.Fprintln(os.Stderr, "(no stdin; using built-in xml sample)")
+	}
+
+	rendered, err := markdown.Render(width, body)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "markdown.Render:", err)
+		os.Exit(1)
+	}
+
+	// Mirror prview.renderSummary's Width wrap, then prview.View's
+	// Padding wrapper, then the viewport's outer Width(viewportWidth).
+	innerWrap := lipgloss.NewStyle().Width(width).MaxWidth(width).Align(lipgloss.Left).Render(rendered)
+	contentPadding := 2 // gh-dash default Sidebar.ContentPadding
+	withPadding := lipgloss.NewStyle().Padding(0, contentPadding).Render(innerWrap)
+	viewportWidth := width + 2*contentPadding
+	final := lipgloss.NewStyle().Width(viewportWidth).Render(withPadding)
+
+	fmt.Fprintf(os.Stdout, "=== width=%d viewportWidth=%d ===\n", width, viewportWidth)
+	for i, line := range strings.Split(final, "\n") {
+		visW := lipgloss.Width(line)
+		bg := strings.Contains(line, "\x1b[48;2;234;238;242")
+		// Show escapes literally so SGR sequences are visible.
+		literal := strings.ReplaceAll(line, "\x1b", "\\x1b")
+		fmt.Fprintf(os.Stdout, "%2d w=%d bg=%v : %s\n", i, visW, bg, literal)
 	}
 }
