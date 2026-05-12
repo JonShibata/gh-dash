@@ -507,6 +507,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, cmd
 
+		case key.Matches(msg, m.keys.CopyTitle):
+			var cmd tea.Cmd
+			if currRowData == nil || reflect.ValueOf(currRowData).IsNil() {
+				cmd = m.notifyErr("Current selection isn't associated with a PR/Issue")
+				return m, cmd
+			}
+			// Markdown-link format with the issue/PR number appended
+			// outside the link: pastes as a clickable link in
+			// Slack/GitHub/Jira/etc. with the bare "#1234" hanging
+			// off the end so the number stays mentionable/searchable
+			// even after the link rendering collapses the URL.
+			payload := fmt.Sprintf("[%s](%s) #%d", currRowData.GetTitle(), currRowData.GetUrl(), currRowData.GetNumber())
+			err := clipboard.WriteAll(payload)
+			if err != nil {
+				cmd = m.notifyErr(fmt.Sprintf("Failed copying to clipboard %v", err))
+			} else {
+				cmd = m.notify(fmt.Sprintf("Copied %q to clipboard", payload))
+			}
+			return m, cmd
+
 		case key.Matches(msg, m.keys.Quit):
 			if !m.ctx.Config.ConfirmQuit {
 				return m, tea.Quit

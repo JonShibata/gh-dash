@@ -48,6 +48,7 @@ type KeyMap struct {
 	Search                key.Binding
 	CopyUrl               key.Binding
 	CopyNumber            key.Binding
+	CopyTitle             key.Binding
 	Help                  key.Binding
 	Quit                  key.Binding
 }
@@ -132,6 +133,7 @@ func (k KeyMap) AppKeys() []key.Binding {
 		k.OpenGithub,
 		k.CopyNumber,
 		k.CopyUrl,
+		k.CopyTitle,
 		k.Search,
 	}
 }
@@ -212,6 +214,10 @@ var Keys = &KeyMap{
 	CopyUrl: key.NewBinding(
 		key.WithKeys("Y"),
 		key.WithHelp("Y", "copy url"),
+	),
+	CopyTitle: key.NewBinding(
+		key.WithKeys("T"),
+		key.WithHelp("T", "copy title + url"),
 	),
 	Help: key.NewBinding(
 		key.WithKeys("?"),
@@ -320,6 +326,8 @@ func rebindUniversal(universal []config.Keybinding) error {
 			key = &Keys.CopyUrl
 		case "copyNumber":
 			key = &Keys.CopyNumber
+		case "copyTitle":
+			key = &Keys.CopyTitle
 		case "help":
 			key = &Keys.Help
 		case "quit":
