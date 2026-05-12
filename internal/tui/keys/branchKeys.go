@@ -123,13 +123,11 @@ func rebindBranchKeys(keys []config.Keybinding) error {
 			return fmt.Errorf("unknown built-in branch key: '%s'", branchKey.Builtin)
 		}
 
-		key.SetKeys(branchKey.Key)
-
 		helpDesc := key.Help().Desc
 		if branchKey.Name != "" {
 			helpDesc = branchKey.Name
 		}
-		key.SetHelp(branchKey.Key, helpDesc)
+		applyRebind(key, branchKey, helpDesc)
 	}
 
 	return nil
