@@ -236,7 +236,7 @@ var CustomDarkStyleConfig = ansi.StyleConfig{
 				Color: stringPtr("#6E7781"),
 			},
 			Background: ansi.StylePrimitive{
-				BackgroundColor: stringPtr("#F6F8FA"),
+				BackgroundColor: stringPtr("#EAEEF2"),
 			},
 		},
 	},

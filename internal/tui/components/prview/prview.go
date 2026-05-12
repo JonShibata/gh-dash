@@ -3,6 +3,7 @@ package prview
 import (
 	"fmt"
 	"image/color"
+	"os"
 	"regexp"
 	"strings"
 
@@ -607,6 +608,23 @@ func (m *Model) renderSummary() string {
 		return ""
 	}
 
+	// DEBUG: when GHD_DUMP_RENDER=1, write the post-markdown.Render
+	// output (with the bg-padded code-block lines as built by
+	// padCodeBlockLines) to /tmp/gh-dash-render-summary.dump on every
+	// render, with ANSI escapes shown literally so we can inspect
+	// what bytes actually leave the renderer.
+	if os.Getenv("GHD_DUMP_RENDER") == "1" {
+		dump := strings.Builder{}
+		dump.WriteString(fmt.Sprintf("=== width=%d  prNumber=%d ===\n", width, m.pr.Data.GetNumber()))
+		for i, line := range strings.Split(rendered, "\n") {
+			visW := lipgloss.Width(line)
+			bg := strings.Contains(line, "\x1b[48;2;234;238;242")
+			literal := strings.ReplaceAll(line, "\x1b", "\\x1b")
+			dump.WriteString(fmt.Sprintf("%3d w=%d bg=%v : %s\n", i, visW, bg, literal))
+		}
+		_ = os.WriteFile("/tmp/gh-dash-render-summary.dump", []byte(dump.String()), 0o644)
+	}
+
 	bodyHeight := lipgloss.Height(rendered)
 	if !m.summaryViewMore && bodyHeight > foldBodyHeight {
 		rendered = lipgloss.NewStyle().MaxHeight(foldBodyHeight).Render(rendered)
@@ -760,7 +778,16 @@ func (m *Model) SetIsCommenting(isCommenting bool) tea.Cmd {
 }
 
 func (m *Model) getIndentedContentWidth() int {
-	return m.width - 4*m.ctx.Styles.Sidebar.ContentPadding
+	// View() wraps body content in `lipgloss.Padding(0, ContentPadding)`,
+	// which consumes 2*ContentPadding columns total (left + right). The
+	// historical `4*ContentPadding` here under-counted the available
+	// width by 2*ContentPadding, leaving a visible gap on the right of
+	// every body element — most obvious on code blocks where the
+	// padCodeBlockLines bg fills only up to wrap width and stops short
+	// of the actual visible right edge. Use the correct factor so
+	// content (and the code-block bg) extends fully to the visible
+	// right edge of the sidebar.
+	return m.width - 2*m.ctx.Styles.Sidebar.ContentPadding
 }
 
 func (m *Model) GetIsApproving() bool {
