@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -47,9 +48,10 @@ type Model struct {
 	// SetIsReplyingToReview when the editor opens; consumed by Update on
 	// submit. Zero when no reply is in flight.
 	replyTargetCommentId int
-	// threadCursorIdx is the index into unresolvedThreads() that the user
-	// has focused on the Activity tab. R/X act on this thread. Reset to 0
-	// on PR change. Clamped on cursor move.
+	// threadCursorIdx is the index into allThreads() that the user has
+	// focused on the Activity tab. allThreads() is ordered oldest-first to
+	// match the rendered body, so idx 0 is the topmost thread. R/X act on
+	// this thread. Reset to 0 on PR change. Clamped on cursor move.
 	threadCursorIdx int
 	// threadLineOffsets maps a thread's GraphQL Id to its starting line
 	// offset within the rendered Activity body (including viewHeader so
@@ -1132,24 +1134,32 @@ func (m *Model) SetIsReplyingToReview(isReplying bool) tea.Cmd {
 	return cmd
 }
 
-// allThreads returns the visible review threads in cursor order
-// (most-recent first; GraphQL returns oldest first under `last: 50`,
-// so we reverse). Includes resolved threads — the cursor walks them
-// too so x can toggle resolve/unresolve. Threads with zero comments
-// are dropped (nothing to act on).
+// allThreads returns the visible review threads in the same top-to-bottom
+// order renderActivity lays them out: oldest root comment first. The
+// activity body sorts every entry by UpdatedAt ascending, so the cursor
+// MUST walk threads in that same ascending order — otherwise n/N (and the
+// scroll-follow in SetThreadCursorAtLine) move the wrong way: "next" would
+// jump UP the page and "previous" DOWN. Keying on the root comment's
+// UpdatedAt mirrors renderActivity's per-thread sort key exactly, so
+// cursor order == visual order regardless of how GraphQL returned the
+// nodes. Includes resolved threads — the cursor walks them too so x can
+// toggle resolve/unresolve. Threads with zero comments are dropped
+// (nothing to act on).
 func (m *Model) allThreads() []data.ReviewThread {
 	if m.pr == nil || m.pr.Data == nil || !m.pr.Data.IsEnriched {
 		return nil
 	}
 	src := m.pr.Data.Enriched.ReviewThreads.Nodes
 	out := make([]data.ReviewThread, 0, len(src))
-	for i := len(src) - 1; i >= 0; i-- {
-		t := src[i]
+	for _, t := range src {
 		if len(t.Comments.Nodes) == 0 {
 			continue
 		}
 		out = append(out, t)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Comments.Nodes[0].UpdatedAt.Before(out[j].Comments.Nodes[0].UpdatedAt)
+	})
 	return out
 }
 
@@ -1187,8 +1197,9 @@ func (m *Model) pickReplyTarget() int {
 // Height/2) and the cursor lands on whichever thread the user is
 // looking at. Returns true when the cursor index actually changed.
 //
-// Walks allThreads() in cursor order (most-recent first → array index
-// ascending). A line is considered "in" thread T if T's start offset
+// Walks allThreads() in cursor order (oldest first → array index
+// ascending, matching the rendered top-to-bottom layout). A line is
+// considered "in" thread T if T's start offset
 // is the largest one ≤ targetLine — i.e., the line falls between T's
 // start and the next thread's start. Falls back to index 0 (top
 // thread) when nothing matches; that covers the case where the user
