@@ -2,6 +2,7 @@ package prview
 
 import (
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
@@ -260,31 +261,38 @@ func TestSetIsReplyingToReviewNoThreadsIsNoOp(t *testing.T) {
 }
 
 // pickReplyTarget targets whatever thread the activity-tab cursor is
-// pointing at. The cursor walks all threads (resolved and unresolved)
-// so x can toggle resolve/unresolve; the cursor starts at index 0,
-// which after the most-recent-first reverse is the newest thread.
+// pointing at. The cursor walks all threads (resolved and unresolved) so
+// x can toggle resolve/unresolve. allThreads() orders them oldest-first
+// to match the rendered activity body (top-to-bottom = old-to-new), so
+// the default cursor (idx 0) lands on the topmost/oldest thread and
+// MoveThreadCursor(1) — the "next review thread" (n) action — moves DOWN
+// the page to the newer one. The threads are appended in the opposite of
+// their chronological order here to prove allThreads() sorts by time, not
+// by GraphQL array position.
 func TestPickReplyTargetUsesCursor(t *testing.T) {
 	m := newTestModelForAction(t)
 	enriched := data.EnrichedPullRequestData{}
-	mkThread := func(id int, resolved bool) data.ReviewThread {
+	mkThread := func(id int, resolved bool, updated time.Time) data.ReviewThread {
 		return data.ReviewThread{
 			IsResolved: resolved,
 			Comments: data.ReviewComments{Nodes: []data.ReviewComment{
-				{DatabaseId: id},
+				{DatabaseId: id, UpdatedAt: updated},
 			}},
 		}
 	}
+	older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
-		mkThread(111, false), // older unresolved
-		mkThread(222, true),  // newer (cursor lands here at idx 0)
+		mkThread(222, true, newer),  // newer — rendered lower on the page
+		mkThread(111, false, older), // older — rendered at the top
 	)
 	m.pr.Data.Enriched = enriched
 	m.pr.Data.IsEnriched = true
 
-	// Default cursor (idx 0) targets the most recent thread.
-	require.Equal(t, 222, m.pickReplyTarget())
-
-	// Move the cursor down one — now targets the older unresolved.
-	m.MoveThreadCursor(1)
+	// Default cursor (idx 0) targets the oldest/topmost thread.
 	require.Equal(t, 111, m.pickReplyTarget())
+
+	// "next review thread" (n / +1) moves DOWN the page to the newer thread.
+	m.MoveThreadCursor(1)
+	require.Equal(t, 222, m.pickReplyTarget())
 }
