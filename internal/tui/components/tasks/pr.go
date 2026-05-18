@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -26,6 +27,7 @@ type UpdatePRMsg struct {
 	NewComment       *data.Comment
 	ReadyForReview   *bool
 	IsMerged         *bool
+	IsInMergeQueue   *bool
 	AddedAssignees   *data.Assignees
 	RemovedAssignees *data.Assignees
 	Labels           *data.PRLabels
@@ -164,41 +166,164 @@ func PRReady(ctx *context.ProgramContext, section SectionIdentifier, pr data.Row
 	})
 }
 
+// PRMarkDraft converts a ready PR back to draft via `gh pr ready N --undo`.
+// Inverse of PRReady. Sends an UpdatePRMsg with ReadyForReview=false so the
+// section refresh flips IsDraft back on without a full re-fetch.
+func PRMarkDraft(ctx *context.ProgramContext, section SectionIdentifier, pr data.RowData) tea.Cmd {
+	prNumber := pr.GetNumber()
+	return fireTask(ctx, GitHubTask{
+		Id: buildTaskId("pr_markDraft", prNumber),
+		Args: []string{
+			"pr",
+			"ready",
+			fmt.Sprint(prNumber),
+			"--undo",
+			"-R",
+			pr.GetRepoNameWithOwner(),
+		},
+		Section:      section,
+		StartText:    fmt.Sprintf("Marking PR #%d as draft", prNumber),
+		FinishedText: fmt.Sprintf("PR #%d has been marked as draft", prNumber),
+		Msg: func(c *exec.Cmd, err error) tea.Msg {
+			return UpdatePRMsg{
+				PrNumber:       prNumber,
+				ReadyForReview: utils.BoolPtr(false),
+			}
+		},
+	})
+}
+
+// MergePR merges the PR via whichever path the repository supports:
+//
+//   - Queue-required repos (e.g. `deepfield/pipedream`): adds to the
+//     merge queue via the GraphQL `enqueuePullRequest` mutation.
+//     `gh pr merge` is unusable here because it always tries to
+//     enable auto-merge first, and these repos disable
+//     `enablePullRequestAutoMerge`. Same workaround as
+//     ~/settings/gh_pr_mine.sh's merge_pr.
+//   - Non-queue repos: shells out to `gh pr merge -R repo N` (the
+//     historical gh-dash behavior).
+//
+// Detects which path applies by probing `repository.mergeQueue.id`
+// in the same GraphQL call that fetches the PR node id, so we make
+// one round trip regardless of branch.
 func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.RowData) tea.Cmd {
 	prNumber := pr.GetNumber()
-	c := exec.Command(
-		"gh",
-		"pr",
-		"merge",
-		fmt.Sprint(prNumber),
-		"-R",
-		pr.GetRepoNameWithOwner(),
-	)
-
+	repo := pr.GetRepoNameWithOwner()
+	owner, name, ok := strings.Cut(repo, "/")
 	taskId := fmt.Sprintf("merge_%d", prNumber)
+
 	task := context.Task{
 		Id:           taskId,
 		StartText:    fmt.Sprintf("Merging PR #%d", prNumber),
-		FinishedText: fmt.Sprintf("PR #%d has been merged", prNumber),
+		FinishedText: fmt.Sprintf("PR #%d merged or queued", prNumber),
 		State:        context.TaskStart,
 		Error:        nil,
 	}
 	startCmd := ctx.StartTask(task)
 
-	return tea.Batch(startCmd, tea.ExecProcess(c, func(err error) tea.Msg {
-		isMerged := err == nil && c.ProcessState.ExitCode() == 0
-
+	finished := func(err error, update UpdatePRMsg) tea.Msg {
 		return constants.TaskFinishedMsg{
 			SectionId:   section.Id,
 			SectionType: section.Type,
 			TaskId:      taskId,
 			Err:         err,
-			Msg: UpdatePRMsg{
-				PrNumber: prNumber,
-				IsMerged: &isMerged,
-			},
+			Msg:         update,
 		}
-	}))
+	}
+	failed := func(err error) tea.Msg {
+		isMerged := false
+		return finished(err, UpdatePRMsg{PrNumber: prNumber, IsMerged: &isMerged})
+	}
+
+	mergeCmd := func() tea.Msg {
+		if !ok || owner == "" || name == "" {
+			return failed(fmt.Errorf("invalid repo %q", repo))
+		}
+
+		// One probe call: PR node id (needed for the mutation) AND
+		// repo's mergeQueue id (non-null only when a queue is
+		// configured). This decides which merge path to take.
+		probe := exec.Command("gh", "api", "graphql",
+			"-F", "num="+fmt.Sprint(prNumber),
+			"-F", "owner="+owner,
+			"-F", "name="+name,
+			"-f", "query=query($num:Int!,$owner:String!,$name:String!){repository(owner:$owner,name:$name){mergeQueue{id} pullRequest(number:$num){id}}}",
+		)
+		probeOut, err := probe.Output()
+		if err != nil {
+			return failed(fmt.Errorf("PR/queue probe failed: %w", err))
+		}
+		var probeResp struct {
+			Data struct {
+				Repository struct {
+					MergeQueue *struct {
+						ID string `json:"id"`
+					} `json:"mergeQueue"`
+					PullRequest struct {
+						ID string `json:"id"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(probeOut, &probeResp); err != nil {
+			return failed(fmt.Errorf("PR/queue probe parse: %w", err))
+		}
+		prNodeId := probeResp.Data.Repository.PullRequest.ID
+		if prNodeId == "" {
+			return failed(fmt.Errorf("PR #%d not found in %s", prNumber, repo))
+		}
+
+		if probeResp.Data.Repository.MergeQueue != nil && probeResp.Data.Repository.MergeQueue.ID != "" {
+			// Queue-required repo: enqueue via mutation. Success here
+			// means the PR was added to the merge queue, NOT that it
+			// merged — flag IsInMergeQueue so the row renders as
+			// "Queued" instead of jumping straight to "Merged".
+			enqCmd := exec.Command("gh", "api", "graphql",
+				"-F", "prId="+prNodeId,
+				"-f", "query=mutation($prId:ID!){enqueuePullRequest(input:{pullRequestId:$prId}){mergeQueueEntry{position state}}}",
+			)
+			// gh exits non-zero when the GraphQL response carries an
+			// `errors` array (e.g. checks pending, PR not mergeable). The
+			// human-readable reason lives in that array on stdout; gh's
+			// stderr is just a terse echo. Parse stdout so the footer shows
+			// "2 of 16 required status checks are pending." instead of a
+			// truncated raw-JSON blob from CombinedOutput.
+			out, err := enqCmd.Output()
+			var enqResp struct {
+				Errors []struct {
+					Message string `json:"message"`
+				} `json:"errors"`
+			}
+			if jsonErr := json.Unmarshal(out, &enqResp); jsonErr == nil && len(enqResp.Errors) > 0 {
+				return failed(fmt.Errorf("enqueue failed: %s", enqResp.Errors[0].Message))
+			}
+			if err != nil {
+				msg := strings.TrimSpace(string(out))
+				if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+					msg = strings.TrimSpace(string(ee.Stderr))
+				}
+				return failed(fmt.Errorf("enqueue failed: %s", msg))
+			}
+			queued := true
+			return finished(nil, UpdatePRMsg{PrNumber: prNumber, IsInMergeQueue: &queued})
+		}
+
+		// Non-queue fallback: the historical gh pr merge path. Run
+		// non-interactively (no TTY) — for repos that need
+		// interactive method selection, gh's prompt failure is
+		// surfaced as the task error. Most CLEAN-state PRs in
+		// single-method repos merge fine non-interactively.
+		mergeCmd := exec.Command("gh", "pr", "merge", fmt.Sprint(prNumber), "-R", repo)
+		out, err := mergeCmd.CombinedOutput()
+		if err != nil {
+			return failed(fmt.Errorf("gh pr merge: %s", strings.TrimSpace(string(out))))
+		}
+		merged := true
+		return finished(nil, UpdatePRMsg{PrNumber: prNumber, IsMerged: &merged})
+	}
+
+	return tea.Batch(startCmd, mergeCmd)
 }
 
 func CreatePR(

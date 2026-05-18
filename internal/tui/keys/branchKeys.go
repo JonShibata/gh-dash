@@ -56,21 +56,26 @@ var BranchKeys = BranchKeyMap{
 	),
 	ViewPRs: key.NewBinding(
 		key.WithKeys("s"),
-		key.WithHelp("s", "Switch to PRs"),
+		key.WithHelp("s", "switch view"),
 	),
 }
 
-func BranchFullHelp() []key.Binding {
-	return []key.Binding{
-		BranchKeys.Checkout,
-		BranchKeys.FastForward,
-		BranchKeys.Push,
-		BranchKeys.ForcePush,
-		BranchKeys.New,
-		BranchKeys.CreatePr,
-		BranchKeys.Delete,
-		BranchKeys.UpdatePr,
-		BranchKeys.ViewPRs,
+// BranchFullHelp returns the branch-view bindings as a single functional column
+// (create/switch, then sync, then delete, then switch view). Returned as [][]
+// so it composes with the column layout in FullHelp.
+func BranchFullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{
+			BranchKeys.Checkout,
+			BranchKeys.New,
+			BranchKeys.CreatePr,
+			BranchKeys.FastForward,
+			BranchKeys.Push,
+			BranchKeys.ForcePush,
+			BranchKeys.UpdatePr,
+			BranchKeys.Delete,
+			BranchKeys.ViewPRs,
+		},
 	}
 }
 

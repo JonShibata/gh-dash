@@ -67,7 +67,7 @@ var NotificationKeys = NotificationKeyMap{
 	),
 	SwitchToPRs: key.NewBinding(
 		key.WithKeys("s"),
-		key.WithHelp("s", "switch to PRs"),
+		key.WithHelp("s", "switch view"),
 	),
 	ToggleSmartFiltering: key.NewBinding(
 		key.WithKeys("t"),
@@ -75,20 +75,25 @@ var NotificationKeys = NotificationKeyMap{
 	),
 }
 
-func NotificationFullHelp() []key.Binding {
-	return []key.Binding{
-		NotificationKeys.View,
-		NotificationKeys.BackToNotification,
-		NotificationKeys.MarkAsDone,
-		NotificationKeys.MarkAllAsDone,
-		NotificationKeys.MarkAsRead,
-		NotificationKeys.MarkAllAsRead,
-		NotificationKeys.Unsubscribe,
-		NotificationKeys.ToggleBookmark,
-		NotificationKeys.Open,
-		NotificationKeys.SortByRepo,
-		NotificationKeys.SwitchToPRs,
-		NotificationKeys.ToggleSmartFiltering,
+// NotificationFullHelp returns the notification-view bindings as a single
+// functional column (view/open, then mark/act, then sort/filter/switch).
+// Returned as [][] so it composes with the column layout in FullHelp.
+func NotificationFullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{
+			NotificationKeys.View,
+			NotificationKeys.BackToNotification,
+			NotificationKeys.Open,
+			NotificationKeys.MarkAsRead,
+			NotificationKeys.MarkAllAsRead,
+			NotificationKeys.MarkAsDone,
+			NotificationKeys.MarkAllAsDone,
+			NotificationKeys.Unsubscribe,
+			NotificationKeys.ToggleBookmark,
+			NotificationKeys.SortByRepo,
+			NotificationKeys.ToggleSmartFiltering,
+			NotificationKeys.SwitchToPRs,
+		},
 	}
 }
 

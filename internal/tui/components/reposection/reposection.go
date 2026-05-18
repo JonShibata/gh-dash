@@ -120,6 +120,8 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 							cmd = tasks.ReopenPR(m.Ctx, sid, pr)
 						case "ready":
 							cmd = tasks.PRReady(m.Ctx, sid, pr)
+						case "markDraft":
+							cmd = tasks.PRMarkDraft(m.Ctx, sid, pr)
 						case "merge":
 							cmd = tasks.MergePR(m.Ctx, sid, pr)
 						case "update":

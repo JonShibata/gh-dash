@@ -21,6 +21,7 @@ const (
 	PRActionCheckout
 	PRActionClose
 	PRActionReady
+	PRActionMarkDraft
 	PRActionReopen
 	PRActionMerge
 	PRActionUpdate
@@ -61,6 +62,8 @@ func MsgToAction(msg tea.Msg) *PRAction {
 		return &PRAction{Type: PRActionClose}
 	case key.Matches(keyMsg, keys.PRKeys.Ready):
 		return &PRAction{Type: PRActionReady}
+	case key.Matches(keyMsg, keys.PRKeys.MarkDraft):
+		return &PRAction{Type: PRActionMarkDraft}
 	case key.Matches(keyMsg, keys.PRKeys.Reopen):
 		return &PRAction{Type: PRActionReopen}
 	case key.Matches(keyMsg, keys.PRKeys.Merge):

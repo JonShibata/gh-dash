@@ -42,6 +42,7 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/context"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/keys"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/markdown"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/pollgate"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
 )
 
@@ -74,13 +75,6 @@ type Model struct {
 	// area and hides the section list. Toggled with Enter (in) and
 	// Esc/q/Backspace (out). Only meaningful when a row is selected.
 	detailFullscreen bool
-	// focused tracks whether this terminal window/tab currently has
-	// keyboard focus (per OSC 1004 reporting via tea.FocusMsg/BlurMsg).
-	// Auto-refresh ticks no-op when blurred so background ghd
-	// instances don't burn through the shared GitHub GraphQL rate
-	// limit. Defaults to true — terminals start focused, and BlurMsg
-	// will arrive promptly if not.
-	focused bool
 }
 
 func NewModel(location config.Location) Model {
@@ -90,7 +84,6 @@ func NewModel(location config.Location) Model {
 		sidebar:     sidebar.NewModel(),
 		taskSpinner: taskSpinner,
 		tasks:       map[string]context.Task{},
-		focused:     true,
 	}
 
 	version := "dev"
@@ -233,7 +226,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sidebar.IsOpen && !m.prView.IsTextInputBoxFocused() {
 			if consumed, target := m.prView.HandleImageHintKey(msg.String()); consumed {
 				if target != nil {
-					return m, prview.DownloadImageCmd(target.URL)
+					return m, prview.DownloadImageCmd(target.URL, m.prView.RepoNameWithOwner())
 				}
 				return m, nil
 			}
@@ -243,7 +236,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.notificationView.HasPendingAction() {
 			var action string
 			m.notificationView, action = m.notificationView.Update(msg)
-			m.footer.SetLeftSection("")
+			m.footer.SetPendingPrompt("")
 			if action != "" {
 				return m, m.executeNotificationAction(action)
 			}
@@ -607,6 +600,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 
+			case key.Matches(msg, keys.PRKeys.MarkDraft):
+				if currRowData != nil {
+					cmd = m.promptConfirmation(currSection, "markDraft")
+				}
+				return m, cmd
+
 			case key.Matches(msg, keys.PRKeys.Reopen):
 				if currRowData != nil {
 					cmd = m.promptConfirmation(currSection, "reopen")
@@ -761,6 +760,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							cmd = m.promptConfirmationForNotificationPR("ready")
 							return m, cmd
 
+						case prview.PRActionMarkDraft:
+							cmd = m.promptConfirmationForNotificationPR("markDraft")
+							return m, cmd
+
 						case prview.PRActionReopen:
 							cmd = m.promptConfirmationForNotificationPR("reopen")
 							return m, cmd
@@ -896,12 +899,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// stale), but RefreshEnrichedCurrRow re-fetches unconditionally
 		// and swaps in place without a "Loading..." flash.
 		//
-		// Skip the actual fetches when this terminal isn't focused —
-		// background ghd instances would otherwise multiply the
-		// shared GitHub GraphQL rate limit by N. The timer keeps
-		// running so we resume on the next tick after focus returns
-		// (and FocusMsg also fires an immediate catch-up fetch).
-		if !m.focused {
+		// Skip the actual fetches when this instance isn't the one
+		// that should be polling — otherwise N gh-dash instances
+		// would multiply the shared GitHub GraphQL rate limit by N.
+		// Under kitty, ShouldPoll decides from on-screen visibility:
+		// a pane that's visible (active tab, not stacked behind
+		// another) refreshes even when it isn't the focused split,
+		// while panes in background tabs stay quiet. On non-kitty
+		// terminals it falls back to the PID-claim slot. Either way
+		// the timer keeps running, so we resume the moment this pane
+		// becomes visible (or reclaims the slot) on a later tick.
+		if !pollgate.ShouldPoll() {
 			cmds = append(cmds, m.doRefreshAtInterval())
 			break
 		}
@@ -1081,22 +1089,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.FocusMsg:
-		// Window regained focus — flip the gate AND fire a fresh fetch
-		// immediately so the user sees current data instead of waiting
-		// for the next tick interval.
-		m.focused = true
+		// Window regained focus — claim the system-wide poll slot
+		// (stealing from any other gh-dash instance) and fire a fresh
+		// fetch immediately so the user sees current data instead of
+		// waiting for the next tick interval.
+		if err := pollgate.Claim(); err != nil {
+			log.Warn("pollgate claim failed", "err", err)
+		}
 		if currSection != nil {
 			cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
 		}
 		cmds = append(cmds, m.prView.RefreshEnrichedCurrRow())
 
 	case tea.BlurMsg:
-		// Window lost focus — gate off auto-refresh fetches. The
-		// existing tick timer keeps running (the case intervalRefresh
-		// handler skips the actual fetches when m.focused is false),
-		// so when focus returns we resume on the same cadence without
-		// having to restart the timer.
-		m.focused = false
+		// Window lost focus — intentionally a no-op. The poll gate is
+		// no longer tied to terminal focus: we keep polling while we
+		// hold the claim (the user may be viewing a browser or another
+		// window in the same kitty tab and still want updates). Only
+		// another gh-dash instance claiming the slot via its own
+		// FocusMsg will silence this one.
 
 	case tea.MouseClickMsg:
 		if msg.Button != tea.MouseLeft {
@@ -1148,10 +1159,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if currSection != nil {
 		if currSection.IsPromptConfirmationFocused() {
-			m.footer.SetLeftSection(currSection.GetPromptConfirmation())
-		}
-
-		if !currSection.IsPromptConfirmationFocused() {
+			m.footer.SetPendingPrompt(currSection.GetPromptConfirmation())
+			m.footer.SetLeftSection("")
+		} else {
+			m.footer.SetPendingPrompt("")
 			m.footer.SetLeftSection(currSection.GetPagerContent())
 		}
 	}
@@ -2216,7 +2227,7 @@ func (m *Model) promptConfirmationForNotificationPR(action string) tea.Cmd {
 	if prompt == "" {
 		return nil
 	}
-	m.footer.SetLeftSection(m.ctx.Styles.ListViewPort.PagerStyle.Render(prompt))
+	m.footer.SetPendingPrompt(prompt)
 	return nil
 }
 
@@ -2227,7 +2238,7 @@ func (m *Model) promptConfirmationForNotificationIssue(action string) tea.Cmd {
 	if prompt == "" {
 		return nil
 	}
-	m.footer.SetLeftSection(m.ctx.Styles.ListViewPort.PagerStyle.Render(prompt))
+	m.footer.SetPendingPrompt(prompt)
 	return nil
 }
 
@@ -2253,6 +2264,10 @@ func (m *Model) executeNotificationAction(action string) tea.Cmd {
 	case "pr_ready":
 		if pr != nil {
 			return tasks.PRReady(m.ctx, sid, pr)
+		}
+	case "pr_markDraft":
+		if pr != nil {
+			return tasks.PRMarkDraft(m.ctx, sid, pr)
 		}
 	case "pr_merge":
 		if pr != nil {

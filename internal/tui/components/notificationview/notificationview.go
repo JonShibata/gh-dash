@@ -95,6 +95,8 @@ func (m *Model) SetPendingPRAction(action string) string {
 	switch action {
 	case "ready":
 		actionDisplay = "mark as ready"
+	case "markDraft":
+		actionDisplay = "convert back to draft"
 	case "approveWorkflows":
 		actionDisplay = "approve all workflows for"
 	}

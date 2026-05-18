@@ -124,6 +124,12 @@ func (m *Model) GetCurrItem() int {
 	return m.rowsViewport.GetCurrItem()
 }
 
+// SetCurrItem moves the row cursor to idx (clamped), scrolling it into
+// view. See listviewport.Model.SetCurrItem.
+func (m *Model) SetCurrItem(idx int) int {
+	return m.rowsViewport.SetCurrItem(idx)
+}
+
 func (m *Model) PrevItem() int {
 	currItem := m.rowsViewport.PrevItem()
 	m.SyncViewPortContent()

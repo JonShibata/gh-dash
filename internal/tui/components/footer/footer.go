@@ -27,6 +27,13 @@ type Model struct {
 	help            bbHelp.Model
 	ShowAll         bool
 	ShowConfirmQuit bool
+	// pendingPrompt is a confirmation prompt (e.g. "Are you sure you
+	// want to convert this PR back to draft? (Y/n)") that should
+	// occupy the full bottom bar so long messages aren't truncated by
+	// the view switcher and right-side indicators. Empty string =
+	// not in prompt mode → normal viewSwitcher/leftSection/etc.
+	// layout. Mirrors ShowConfirmQuit's "take over the bar" pattern.
+	pendingPrompt string
 }
 
 func NewModel(ctx *context.ProgramContext) Model {
@@ -46,10 +53,19 @@ func NewModel(ctx *context.ProgramContext) Model {
 func (m Model) View() string {
 	var footer string
 
-	if m.ShowConfirmQuit {
+	switch {
+	case m.ShowConfirmQuit:
 		footer = lipgloss.NewStyle().
 			Render("Really quit? (Press y/enter to confirm, any other key to cancel)")
-	} else {
+	case m.pendingPrompt != "":
+		// Dedicate the whole bottom bar to the prompt so long
+		// confirmation messages aren't truncated. Background style
+		// matches the surrounding footer so it reads as a single
+		// strip rather than a floating element.
+		footer = m.ctx.Styles.Common.FooterStyle.
+			Width(m.ctx.ScreenWidth).
+			Render(m.pendingPrompt)
+	default:
 		helpIndicator := lipgloss.NewStyle().
 			Background(m.ctx.Theme.FaintText).
 			Foreground(m.ctx.Theme.SelectedBackground).
@@ -91,12 +107,82 @@ func (m Model) View() string {
 	}
 
 	if m.ShowAll {
-		keymap := keys.CreateKeyMapForView(m.ctx.View)
-		fullHelp := m.help.View(keymap)
-		return lipgloss.JoinVertical(lipgloss.Top, footer, fullHelp)
+		return lipgloss.JoinVertical(lipgloss.Top, footer, m.renderFullHelp())
 	}
 
 	return footer
+}
+
+// renderFullHelp lays out the full help as a flex-wrapping grid. The bubbles
+// help renderer (help.View) drops any column that doesn't fit the viewport
+// width, silently hiding bindings on narrow windows. Instead we render each
+// functional group as a column (matching the bubbles column styling) and wrap
+// overflow columns onto new rows, so every binding is always visible.
+func (m Model) renderFullHelp() string {
+	groups := keys.CreateKeyMapForView(m.ctx.View).FullHelp()
+	styles := m.help.Styles
+	width := m.help.Width()
+	separator := styles.FullSeparator.Inline(true).Render(m.help.FullSeparator)
+	sepWidth := lipgloss.Width(separator)
+
+	// Render each non-empty group into a column, skipping disabled bindings.
+	var cols []string
+	for _, group := range groups {
+		var keyList, descList []string
+		for _, kb := range group {
+			if !kb.Enabled() {
+				continue
+			}
+			keyList = append(keyList, kb.Help().Key)
+			descList = append(descList, kb.Help().Desc)
+		}
+		if len(keyList) == 0 {
+			continue
+		}
+		cols = append(cols, lipgloss.JoinHorizontal(lipgloss.Top,
+			styles.FullKey.Render(strings.Join(keyList, "\n")),
+			" ",
+			styles.FullDesc.Render(strings.Join(descList, "\n")),
+		))
+	}
+	if len(cols) == 0 {
+		return ""
+	}
+
+	// Blank line between row-bands for readability.
+	return strings.Join(packHelpRows(cols, separator, sepWidth, width), "\n\n")
+}
+
+// packHelpRows greedily packs rendered help columns into rows that fit within
+// width, joining columns with separator and wrapping overflow onto new rows. A
+// column wider than width on its own is placed alone on its row rather than
+// dropped. width <= 0 means "unbounded" → a single row.
+func packHelpRows(cols []string, separator string, sepWidth, width int) []string {
+	var rows []string
+	var row []string
+	rowWidth := 0
+	for _, col := range cols {
+		w := lipgloss.Width(col)
+		need := w
+		if len(row) > 0 {
+			need += sepWidth
+		}
+		if len(row) > 0 && width > 0 && rowWidth+need > width {
+			rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, row...))
+			row = nil
+			rowWidth = 0
+		}
+		if len(row) > 0 {
+			row = append(row, separator)
+			rowWidth += sepWidth
+		}
+		row = append(row, col)
+		rowWidth += w
+	}
+	if len(row) > 0 {
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, row...))
+	}
+	return rows
 }
 
 func (m *Model) SetShowConfirmQuit(val bool) {
@@ -197,6 +283,15 @@ func (m *Model) renderViewSwitcher(ctx *context.ProgramContext) string {
 
 func (m *Model) SetLeftSection(leftSection string) {
 	*m.leftSection = leftSection
+}
+
+// SetPendingPrompt swaps the bottom bar into "prompt mode" — the
+// passed string fills the entire footer width so long confirmation
+// messages aren't truncated by the surrounding view-switcher and
+// indicator chrome. Pass "" to exit prompt mode and restore the
+// normal layout.
+func (m *Model) SetPendingPrompt(prompt string) {
+	m.pendingPrompt = prompt
 }
 
 func (m *Model) SetRightSection(rightSection string) {

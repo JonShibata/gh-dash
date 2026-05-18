@@ -386,7 +386,17 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 
 	case SectionNotificationsFetchedMsg:
 		if m.LastFetchTaskId == msg.TaskId {
-			if m.PageInfo != nil {
+			// Pin the cursor by thread id across a full-list replace.
+			// Notifications are ordered by recency, so a refetch reorders
+			// them as threads get new activity; without re-pinning, the
+			// fixed row index would slide onto a different notification.
+			isReplace := m.PageInfo == nil
+			prevSelectedId, prevIdx := "", m.Table.GetCurrItem()
+			if cur := m.GetCurrNotification(); cur != nil {
+				prevSelectedId = cur.GetId()
+			}
+
+			if !isReplace {
 				// Append to existing notifications (pagination)
 				m.Notifications = append(m.Notifications, msg.Notifications...)
 			} else {
@@ -399,6 +409,17 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			m.Table.SetRows(m.BuildRows())
 			m.UpdateLastUpdated(time.Now())
 			m.UpdateTotalItemsCount(m.TotalCount)
+
+			if isReplace && prevSelectedId != "" {
+				newIdx := prevIdx
+				for i := range m.Notifications {
+					if m.Notifications[i].GetId() == prevSelectedId {
+						newIdx = i
+						break
+					}
+				}
+				m.Table.SetCurrItem(newIdx)
+			}
 
 			// Start background fetches for comment counts (only for new notifications)
 			fetchCmds := m.fetchCommentCountsForNotifications(msg.Notifications)

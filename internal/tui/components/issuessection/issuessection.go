@@ -154,7 +154,18 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 
 	case SectionIssuesFetchedMsg:
 		if m.LastFetchTaskId == msg.TaskId {
-			if m.PageInfo != nil {
+			// Pin the cursor by identity across a full-list replace: issues
+			// are sorted sort:updated, so acting on one reorders it to the
+			// top on the next refetch. Without this the fixed row index
+			// would slide onto a different issue. See prssection for the
+			// PR-side rationale.
+			isReplace := m.PageInfo == nil
+			prevSelectedUrl, prevIdx := "", m.Table.GetCurrItem()
+			if cur := m.GetCurrRow(); cur != nil {
+				prevSelectedUrl = cur.GetUrl()
+			}
+
+			if !isReplace {
 				m.Issues = append(m.Issues, msg.Issues...)
 			} else {
 				m.Issues = msg.Issues
@@ -165,6 +176,17 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			m.Table.SetRows(m.BuildRows())
 			m.UpdateLastUpdated(time.Now())
 			m.UpdateTotalItemsCount(m.TotalCount)
+
+			if isReplace && prevSelectedUrl != "" {
+				newIdx := prevIdx
+				for i := range m.Issues {
+					if m.Issues[i].Url == prevSelectedUrl {
+						newIdx = i
+						break
+					}
+				}
+				m.Table.SetCurrItem(newIdx)
+			}
 		}
 	}
 
