@@ -59,10 +59,10 @@ func TestFullHelpIncludesPRKeysForPRSubject(t *testing.T) {
 		t.Error("expected PR key 'approve' to be present when viewing PR notification")
 	}
 
-	found = findKeyByHelp(allKeys, "approve all workflows")
+	found = findKeyByHelp(allKeys, "approve fork PRs")
 	if !found {
 		t.Error(
-			"expected PR key 'approve all workflows' to be present when viewing PR notification",
+			"expected PR key 'approve fork PRs' to be present when viewing PR notification",
 		)
 	}
 

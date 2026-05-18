@@ -84,8 +84,13 @@ func (k KeyMap) ShortHelp() []key.Binding {
 	return []key.Binding{k.Help}
 }
 
+// FullHelp lays out the help screen as columns. The leading Move and App
+// columns are universal (identical across every view) so they don't shift as
+// you switch views. The view-specific bindings are returned already split into
+// functional groups (one slice per column) so a long action list spreads across
+// several balanced columns instead of one tall one.
 func (k KeyMap) FullHelp() [][]key.Binding {
-	var additionalKeys []key.Binding
+	var additionalGroups [][]key.Binding
 	var customKeys []key.Binding
 
 	if len(CustomUniversalBindings) > 0 {
@@ -94,33 +99,33 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 
 	switch k.viewType {
 	case config.PRsView:
-		additionalKeys = PRFullHelp()
+		additionalGroups = PRFullHelp()
 		customKeys = append(customKeys, CustomPRBindings...)
 	case config.RepoView:
-		additionalKeys = BranchFullHelp()
+		additionalGroups = BranchFullHelp()
 		customKeys = append(customKeys, CustomBranchBindings...)
 	case config.NotificationsView:
-		additionalKeys = NotificationFullHelp()
+		additionalGroups = NotificationFullHelp()
 		customKeys = append(customKeys, CustomNotificationBindings...)
 		// Include PR or Issue keys when viewing that subject type
 		switch notificationSubject {
 		case NotificationSubjectPR:
-			additionalKeys = append(additionalKeys, PRFullHelp()...)
+			additionalGroups = append(additionalGroups, PRFullHelp()...)
 			customKeys = append(customKeys, CustomPRBindings...)
 		case NotificationSubjectIssue:
-			additionalKeys = append(additionalKeys, IssueFullHelp()...)
+			additionalGroups = append(additionalGroups, IssueFullHelp()...)
 			customKeys = append(customKeys, CustomIssueBindings...)
 		}
 	default:
-		additionalKeys = IssueFullHelp()
+		additionalGroups = IssueFullHelp()
 		customKeys = append(customKeys, CustomIssueBindings...)
 	}
 
 	sections := [][]key.Binding{
 		k.NavigationKeys(),
 		k.AppKeys(),
-		additionalKeys,
 	}
+	sections = append(sections, additionalGroups...)
 
 	if len(customKeys) > 0 {
 		sections = append(sections, customKeys)
@@ -131,23 +136,25 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 	return sections
 }
 
+// NavigationKeys is the universal "Move" column: cursor moves, then jumps to
+// ends, then section switching, then preview paging.
 func (k KeyMap) NavigationKeys() []key.Binding {
 	return []key.Binding{
 		k.Up,
 		k.Down,
-		k.PrevSection,
-		k.NextSection,
 		k.FirstLine,
 		k.LastLine,
+		k.PrevSection,
+		k.NextSection,
 		k.PageDown,
 		k.PageUp,
 	}
 }
 
+// AppKeys is the universal "App" column: view/layout, then open/copy, then
+// find/refresh.
 func (k KeyMap) AppKeys() []key.Binding {
 	return []key.Binding{
-		k.Refresh,
-		k.RefreshAll,
 		k.TogglePreview,
 		k.TogglePreviewPosition,
 		k.EnterDetail,
@@ -157,6 +164,8 @@ func (k KeyMap) AppKeys() []key.Binding {
 		k.CopyUrl,
 		k.CopyTitle,
 		k.Search,
+		k.Refresh,
+		k.RefreshAll,
 	}
 }
 

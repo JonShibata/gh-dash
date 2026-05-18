@@ -87,6 +87,23 @@ func (m *Model) GetCurrItem() int {
 	return m.currId
 }
 
+// SetCurrItem moves the cursor to the given item index, clamped to the
+// valid range, scrolling the viewport so the item stays visible. Reuses
+// NextItem/PrevItem so the scroll-bound bookkeeping matches manual
+// navigation exactly. Used to keep the selection on the same logical row
+// (by identity) after the underlying list is reordered or shrunk by a
+// refetch.
+func (m *Model) SetCurrItem(idx int) int {
+	idx = utils.Max(0, utils.Min(idx, m.NumCurrentItems-1))
+	for m.currId < idx {
+		m.NextItem()
+	}
+	for m.currId > idx {
+		m.PrevItem()
+	}
+	return m.currId
+}
+
 func (m *Model) NextItem() int {
 	atBottomOfViewport := m.currId >= m.bottomBoundId
 	if atBottomOfViewport {

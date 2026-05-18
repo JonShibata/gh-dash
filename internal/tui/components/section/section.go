@@ -481,6 +481,9 @@ func (m *BaseModel) GetPromptConfirmation() string {
 		case m.PromptConfirmationAction == "ready" && m.Ctx.View == config.PRsView:
 			prompt = "Are you sure you want to mark this PR as ready? (Y/n) "
 
+		case m.PromptConfirmationAction == "markDraft" && m.Ctx.View == config.PRsView:
+			prompt = "Are you sure you want to convert this PR back to draft? (Y/n) "
+
 		case m.PromptConfirmationAction == "merge" && m.Ctx.View == config.PRsView:
 			prompt = "Are you sure you want to merge this PR? (Y/n) "
 

@@ -9,6 +9,17 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/utils"
 )
 
+// changedFiles returns the enriched file list once the PR has been enriched
+// (the on-demand per-PR fetch pulls up to 100 files), falling back to the
+// per-tick list query's 5-file preview until enrichment lands. Mirrors how
+// the activity/checks tabs switch on IsEnriched.
+func (m *Model) changedFiles() data.ChangedFiles {
+	if m.pr.Data.IsEnriched {
+		return m.pr.Data.Enriched.Files
+	}
+	return m.pr.Data.Primary.Files
+}
+
 func (m *Model) renderChangesOverview() string {
 	w := m.getIndentedContentWidth() - 2
 	changes := lipgloss.NewStyle().
@@ -32,7 +43,7 @@ func (m *Model) renderChangesOverview() string {
 			changes.Render(
 				lipgloss.JoinHorizontal(lipgloss.Top,
 					lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).Render(" "),
-					fmt.Sprintf("%d files changed", m.pr.Data.Primary.Files.TotalCount),
+					fmt.Sprintf("%d files changed", m.changedFiles().TotalCount),
 					" ",
 					m.pr.RenderLines(false)),
 			),
@@ -53,7 +64,7 @@ func (m *Model) renderChangesOverview() string {
 
 func (m *Model) renderChangedFiles() string {
 	files := make([]string, 0)
-	for _, file := range m.pr.Data.Primary.Files.Nodes {
+	for _, file := range m.changedFiles().Nodes {
 		files = append(files, m.renderFile(file))
 	}
 

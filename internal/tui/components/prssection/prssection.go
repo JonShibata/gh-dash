@@ -106,6 +106,8 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 						cmd = tasks.ReopenPR(m.Ctx, sid, pr)
 					case "ready":
 						cmd = tasks.PRReady(m.Ctx, sid, pr)
+					case "markDraft":
+						cmd = tasks.PRMarkDraft(m.Ctx, sid, pr)
 					case "merge":
 						cmd = tasks.MergePR(m.Ctx, sid, pr)
 					case "update":
@@ -206,12 +208,19 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			if msg.Labels != nil {
 				currPr.Primary.Labels.Nodes = msg.Labels.Nodes
 			}
-			if msg.ReadyForReview != nil && *msg.ReadyForReview {
-				currPr.Primary.IsDraft = false
+			if msg.ReadyForReview != nil {
+				currPr.Primary.IsDraft = !*msg.ReadyForReview
 			}
 			if msg.IsMerged != nil && *msg.IsMerged {
 				currPr.Primary.State = "MERGED"
 				currPr.Primary.Mergeable = ""
+			}
+			if msg.IsInMergeQueue != nil && *msg.IsInMergeQueue {
+				// Enqueue success: PR is still OPEN, just sitting in
+				// the queue. Flip the flag so RenderState shows
+				// "Queued" — without this the row keeps rendering as
+				// plain "Open" until the next fetch.
+				currPr.Primary.IsInMergeQueue = true
 			}
 			m.Prs[i] = currPr
 			m.SetIsLoading(false)
@@ -221,7 +230,20 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 
 	case SectionPullRequestsFetchedMsg:
 		if m.LastFetchTaskId == msg.TaskId {
-			if m.PageInfo != nil {
+			// Capture the selected PR's identity (URL is unique across
+			// repos; PR number is not) before the slice is replaced. The
+			// list is sorted sort:updated, so any action that bumps a PR's
+			// updatedAt (ready/comment/approve/assign/merge) reorders it to
+			// the top on the next refetch. Without re-pinning the cursor by
+			// identity, the fixed row index would land on a different PR and
+			// the dashboard would auto-open it.
+			isReplace := m.PageInfo == nil
+			prevSelectedUrl, prevIdx := "", m.Table.GetCurrItem()
+			if cur := m.GetCurrRow(); cur != nil {
+				prevSelectedUrl = cur.GetUrl()
+			}
+
+			if !isReplace {
 				m.Prs = append(m.Prs, msg.Prs...)
 			} else {
 				// Index the previous PRs by number so we can carry the
@@ -249,6 +271,21 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			m.Table.SetRows(m.BuildRows())
 			m.Table.UpdateLastUpdated(time.Now())
 			m.UpdateTotalItemsCount(m.TotalCount)
+
+			// Re-pin the cursor to the same PR after a full-list replace.
+			// If that PR is gone (left a filtered section), fall back to the
+			// previous index, which SetCurrItem clamps to a valid neighbor
+			// instead of leaving the cursor out of bounds.
+			if isReplace && prevSelectedUrl != "" {
+				newIdx := prevIdx
+				for i, p := range m.Prs {
+					if p.Primary.Url == prevSelectedUrl {
+						newIdx = i
+						break
+					}
+				}
+				m.Table.SetCurrItem(newIdx)
+			}
 		}
 	}
 

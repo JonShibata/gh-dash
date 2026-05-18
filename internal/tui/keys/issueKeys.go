@@ -56,21 +56,26 @@ var IssueKeys = IssueKeyMap{
 	),
 	ViewPRs: key.NewBinding(
 		key.WithKeys("s"),
-		key.WithHelp("s", "switch to notifications"),
+		key.WithHelp("s", "switch view"),
 	),
 }
 
-func IssueFullHelp() []key.Binding {
-	return []key.Binding{
-		IssueKeys.Label,
-		IssueKeys.Assign,
-		IssueKeys.Unassign,
-		IssueKeys.Comment,
-		IssueKeys.Checkout,
-		IssueKeys.Close,
-		IssueKeys.Reopen,
-		IssueKeys.ToggleSmartFiltering,
-		IssueKeys.ViewPRs,
+// IssueFullHelp returns the issue-view bindings as a single functional column
+// (act, then state, then filter/switch). Returned as [][] so it composes with
+// the column layout in FullHelp.
+func IssueFullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{
+			IssueKeys.Comment,
+			IssueKeys.Label,
+			IssueKeys.Assign,
+			IssueKeys.Unassign,
+			IssueKeys.Checkout,
+			IssueKeys.Close,
+			IssueKeys.Reopen,
+			IssueKeys.ToggleSmartFiltering,
+			IssueKeys.ViewPRs,
+		},
 	}
 }
 

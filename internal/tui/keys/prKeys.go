@@ -22,6 +22,7 @@ type PRKeyMap struct {
 	Close                key.Binding
 	SummaryViewMore      key.Binding
 	Ready                key.Binding
+	MarkDraft            key.Binding
 	Reopen               key.Binding
 	Merge                key.Binding
 	Update               key.Binding
@@ -91,6 +92,10 @@ var PRKeys = PRKeyMap{
 		key.WithKeys("W"),
 		key.WithHelp("W", "ready for review"),
 	),
+	MarkDraft: key.NewBinding(
+		key.WithKeys("B"),
+		key.WithHelp("B", "back to draft"),
+	),
 	Merge: key.NewBinding(
 		key.WithKeys("m"),
 		key.WithHelp("m", "merge"),
@@ -105,7 +110,7 @@ var PRKeys = PRKeyMap{
 	),
 	ApproveWorkflows: key.NewBinding(
 		key.WithKeys("V"),
-		key.WithHelp("V", "approve all workflows"),
+		key.WithHelp("V", "approve fork PRs"),
 	),
 	ToggleSmartFiltering: key.NewBinding(
 		key.WithKeys("t"),
@@ -113,7 +118,7 @@ var PRKeys = PRKeyMap{
 	),
 	ViewIssues: key.NewBinding(
 		key.WithKeys("s"),
-		key.WithHelp("s", "switch to issues"),
+		key.WithHelp("s", "switch view"),
 	),
 	OpenFirstFailed: key.NewBinding(
 		key.WithKeys("O"),
@@ -132,7 +137,7 @@ var PRKeys = PRKeyMap{
 	// (see ui.go). Outside that scope, r remains Refresh.
 	ReviewThreadReply: key.NewBinding(
 		key.WithKeys("r"),
-		key.WithHelp("r", "reply to focused review thread"),
+		key.WithHelp("r", "reply to review thread"),
 	),
 	NextReviewThread: key.NewBinding(
 		key.WithKeys("n"),
@@ -151,33 +156,47 @@ var PRKeys = PRKeyMap{
 	),
 }
 
-func PRFullHelp() []key.Binding {
-	return []key.Binding{
-		PRKeys.PrevSidebarTab,
-		PRKeys.NextSidebarTab,
-		PRKeys.Approve,
-		PRKeys.Assign,
-		PRKeys.Unassign,
-		PRKeys.Label,
-		PRKeys.Comment,
-		PRKeys.Diff,
-		PRKeys.Checkout,
-		PRKeys.Close,
-		PRKeys.Ready,
-		PRKeys.Reopen,
-		PRKeys.Merge,
-		PRKeys.Update,
-		PRKeys.WatchChecks,
-		PRKeys.ApproveWorkflows,
-		PRKeys.ToggleSmartFiltering,
-		PRKeys.ViewIssues,
-		PRKeys.OpenFirstFailed,
-		PRKeys.RerunFailedChecks,
-		PRKeys.JenkinsRerun,
-		PRKeys.ReviewThreadReply,
-		PRKeys.NextReviewThread,
-		PRKeys.PrevReviewThread,
-		PRKeys.RequestReview,
+// PRFullHelp returns the PR-view bindings grouped into functional columns:
+// review/people, state/checks, and navigate/filter. Each inner slice renders as
+// one help column.
+func PRFullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		// Review & people
+		{
+			PRKeys.Approve,
+			PRKeys.RequestReview,
+			PRKeys.Comment,
+			PRKeys.Label,
+			PRKeys.Assign,
+			PRKeys.Unassign,
+			PRKeys.ReviewThreadReply,
+			PRKeys.NextReviewThread,
+			PRKeys.PrevReviewThread,
+		},
+		// State & checks
+		{
+			PRKeys.Merge,
+			PRKeys.Update,
+			PRKeys.Close,
+			PRKeys.Reopen,
+			PRKeys.Ready,
+			PRKeys.MarkDraft,
+			PRKeys.Checkout,
+			PRKeys.WatchChecks,
+			PRKeys.OpenFirstFailed,
+			PRKeys.RerunFailedChecks,
+			PRKeys.JenkinsRerun,
+			PRKeys.ApproveWorkflows,
+		},
+		// Navigate & filter
+		{
+			PRKeys.PrevSidebarTab,
+			PRKeys.NextSidebarTab,
+			PRKeys.Diff,
+			PRKeys.SummaryViewMore,
+			PRKeys.ToggleSmartFiltering,
+			PRKeys.ViewIssues,
+		},
 	}
 }
 
@@ -230,6 +249,8 @@ func rebindPRKeys(keys []config.Keybinding) error {
 			key = &PRKeys.Close
 		case "ready":
 			key = &PRKeys.Ready
+		case "markDraft":
+			key = &PRKeys.MarkDraft
 		case "reopen":
 			key = &PRKeys.Reopen
 		case "merge":

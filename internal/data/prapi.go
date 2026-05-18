@@ -70,7 +70,11 @@ type EnrichedPullRequestData struct {
 	// plenty for nearly all PRs.
 	Reviews            Reviews `graphql:"reviews(last: 30)"`
 	SuggestedReviewers []SuggestedReviewer
-	Files              ChangedFiles `graphql:"files(first: 5)"`
+	// first:100 is GitHub's max page size. This is the on-demand per-PR
+	// enrichment query (not the per-tick list query below), so fetching the
+	// full file list here is cheap. The Files tab reads from here once the PR
+	// is enriched; PRs with >100 changed files would need a pagination loop.
+	Files ChangedFiles `graphql:"files(first: 100)"`
 }
 
 type PullRequestData struct {

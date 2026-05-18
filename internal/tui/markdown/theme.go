@@ -240,17 +240,14 @@ var CustomDarkStyleConfig = ansi.StyleConfig{
 			},
 		},
 	},
-	Table: ansi.StyleTable{
-		StyleBlock: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Format:  " ",
-				Conceal: boolPtr(true),
-			},
-		},
-		CenterSeparator: stringPtr(""),
-		ColumnSeparator: stringPtr(""),
-		RowSeparator:    stringPtr(""),
-	},
+	// Render markdown tables normally. The previous Format:" " +
+	// Conceal:true blanked all cell content (glamour treats Format as a
+	// Go template, so " " with no {{.text}} replaces every token with a
+	// space) — which silently swallowed any table, e.g. Copilot review
+	// summaries whose payload is a <details> table. Empty StyleTable{}
+	// matches glamour's stock dark/light configs and draws Unicode
+	// │ ┼ ─ separators.
+	Table: ansi.StyleTable{},
 	DefinitionDescription: ansi.StylePrimitive{
 		BlockPrefix: " ",
 	},

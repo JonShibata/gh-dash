@@ -1317,3 +1317,14 @@ func (m *Model) repoRef() cmpcontroller.RepoRef {
 func (m *Model) hasData() bool {
 	return m.pr != nil && m.pr.Data != nil
 }
+
+// RepoNameWithOwner returns the "owner/name" of the previewed PR, or ""
+// when no PR is loaded. Used by the parent to give the image-hint
+// downloader the repo context needed to resolve GitHub attachment URLs to
+// signed CDN URLs.
+func (m *Model) RepoNameWithOwner() string {
+	if !m.hasData() || m.pr.Data.Primary == nil {
+		return ""
+	}
+	return m.pr.Data.Primary.GetRepoNameWithOwner()
+}
