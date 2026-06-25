@@ -6,22 +6,23 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// GitHub light diff palette, matching the code-block colors already used
-// in the sidebar. Each line is rendered as a full-width row with a
-// BACKGROUND fill so the hunk reads like a real diff (green = added,
-// red = removed) rather than relying on faint foreground text.
+// GitHub light diff palette. Text is uniformly black; only the BACKGROUND
+// distinguishes added (green) / removed (red) / hunk header (blue) /
+// context (neutral). Each line is rendered as a full-width row so the
+// background fill reads like a real diff.
 var (
+	diffFg       = lipgloss.Color("#000000")
 	diffAddStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#116329")).
+			Foreground(diffFg).
 			Background(lipgloss.Color("#DAFBE1"))
 	diffDelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#82071E")).
+			Foreground(diffFg).
 			Background(lipgloss.Color("#FFEBE9"))
 	diffHdrStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#0550AE")).
+			Foreground(diffFg).
 			Background(lipgloss.Color("#DDF4FF"))
 	diffCtxStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#24292F")).
+			Foreground(diffFg).
 			Background(lipgloss.Color("#EAEEF2"))
 )
 
