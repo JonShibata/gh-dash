@@ -143,7 +143,16 @@ func padCodeBlockLines(rendered string, width int) string {
 		if padW > 0 {
 			pad = bg.Render(strings.Repeat(" ", padW))
 		}
-		lines[i] = indentStripe + core + pad
+		rebuilt := indentStripe + core + pad
+		// Never exceed the wrap width. When the core already fills (or
+		// overflows) width-indent, padW is <= 0 and indent+core pushes
+		// the line to width+indent — the extra columns bleed the code
+		// background into the sidebar's right padding gutter. Clamp back
+		// to width (ANSI-aware; closes the open background).
+		if lipgloss.Width(rebuilt) > width {
+			rebuilt = lipgloss.NewStyle().MaxWidth(width).Render(rebuilt)
+		}
+		lines[i] = rebuilt
 	}
 	return strings.Join(lines, "\n")
 }
