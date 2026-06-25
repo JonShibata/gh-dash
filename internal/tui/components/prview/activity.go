@@ -69,7 +69,7 @@ func (m *Model) renderActivity() string {
 			continue
 		}
 		focused := focusedId != "" && thread.Id == focusedId
-		rendered, err := m.renderReviewThread(thread.Path, thread.Line, thread.IsResolved, focused, visible)
+		rendered, err := m.renderReviewThread(thread.Path, thread.Line, thread.IsResolved, thread.IsOutdated, focused, visible)
 		if err != nil {
 			continue
 		}
@@ -136,6 +136,13 @@ func (m *Model) renderActivity() string {
 	} else {
 		title := m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(
 			fmt.Sprintf("%s  %d comments", constants.CommentsIcon, len(activities)))
+		// Fold the thread action bar into `title` so the existing
+		// `cum += lipgloss.Height(title)` below already accounts for its
+		// height — the n/N scroll-follow line offsets stay correct
+		// without touching the offset loop.
+		if bar := m.renderThreadActionBar(); bar != "" {
+			title = lipgloss.JoinVertical(lipgloss.Left, title, bar, "")
+		}
 		// Offsets must be in *viewport* coordinates: View() prepends
 		// viewHeader() before the tab body, and YOffset() measures the
 		// full output. Without this adjustment the cursor-follow logic
@@ -186,6 +193,43 @@ func (m *Model) renderActivity() string {
 
 func renderEmptyState() string {
 	return lipgloss.NewStyle().Italic(true).Render("No comments...")
+}
+
+// renderThreadActionBar renders a single, fixed-height line that names the
+// currently-selected review thread (index/count, path:line, resolved
+// state) and the actions available on it. It removes the ambiguity of
+// "which thread does x/r/R act on?" by stating it explicitly above the
+// conversation. Empty when there are no review threads.
+func (m *Model) renderThreadActionBar() string {
+	idx, count, ok := m.focusedThreadPosition()
+	if !ok {
+		return ""
+	}
+	t, ok := m.focusedThread()
+	if !ok {
+		return ""
+	}
+
+	state := "unresolved"
+	resolveAction := "x resolve"
+	if t.IsResolved {
+		state = "resolved"
+		resolveAction = "x unresolve"
+	}
+
+	accent := lipgloss.NewStyle().Foreground(m.ctx.Theme.PrimaryText).Bold(true)
+	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
+
+	bar := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		accent.Render(fmt.Sprintf("▶ %d/%d", idx+1, count)),
+		faint.Render(fmt.Sprintf(" · %s:%d · %s", t.Path, t.Line, state)),
+		faint.Render(fmt.Sprintf("   %s   r reply   R reply+resolve   n/N move", resolveAction)),
+	)
+	// Pin to one line: Width wraps over-long content, MaxHeight clips it
+	// back to a single row so the folded-into-title height stays a
+	// predictable constant for the offset math.
+	return lipgloss.NewStyle().Width(m.getIndentedContentWidth()).MaxHeight(1).Render(bar)
 }
 
 type comment struct {
@@ -261,23 +305,67 @@ func (m *Model) renderReviewHeader(review data.Review) string {
 	)
 }
 
-// renderReviewThread renders one inline-review thread as a grouped
-// block: a faint location header (path:line, plus a [resolved] tag when
-// applicable), the diff hunk above the conversation, then the root
-// comment followed by replies indented by a leading bar. Replies share
-// a single header style so the visual grouping reads as one unit even
-// when authors differ.
+// renderReviewThread renders one inline-review thread as a grouped block
+// with a state-colored left gutter: a location header (path:line, plus
+// [resolved]/[outdated] tags), the colorized diff hunk above the
+// conversation, then the root comment followed by replies indented by a
+// leading bar. Replies share a single header style so the visual
+// grouping reads as one unit even when authors differ.
+//
+// The left gutter encodes state at a glance — focused (accent), outdated
+// (warning), resolved (faint), or default — and makes the *selected*
+// thread (the one x/r/R act on) unmistakable. Inner content is rendered
+// 2 columns narrower so the gutter+padding leaves the outer width equal
+// to a non-focused block; keeping outer width invariant is what lets the
+// n/N scroll-follow line offsets stay stable across focus changes.
+//
+// Resolved threads collapse to a single summary line unless focused, so
+// closed-out conversations stop eating vertical space. Focusing one (via
+// n/N) expands it again so x can unresolve.
 func (m *Model) renderReviewThread(
 	path string,
 	line int,
 	resolved bool,
+	outdated bool,
 	focused bool,
 	comments []data.ReviewComment,
 ) (string, error) {
 	width := m.getIndentedContentWidth()
+	innerWidth := width - 2 // left gutter border (1) + padding (1)
+	if innerWidth < 1 {
+		innerWidth = width
+	}
 	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
 
-	// Header: ▶ path:line  [resolved]   (▶ marks the focused thread)
+	// Left gutter color encodes thread state; focused wins so the
+	// selected thread reads as a brighter version of the same gutter.
+	gutterColor := m.ctx.Theme.FaintBorder
+	switch {
+	case focused:
+		gutterColor = m.ctx.Theme.PrimaryText
+	case outdated:
+		gutterColor = m.ctx.Theme.WarningText
+	case resolved:
+		gutterColor = m.ctx.Theme.FaintText
+	}
+	gutter := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(gutterColor).
+		PaddingLeft(1)
+
+	// Collapsed summary for resolved, non-focused threads. One line →
+	// the caller's height/offset bookkeeping is unaffected.
+	if resolved && !focused {
+		n := len(comments)
+		noun := "comments"
+		if n == 1 {
+			noun = "comment"
+		}
+		summary := fmt.Sprintf("✓ %s:%d · %d %s", path, line, n, noun)
+		return gutter.Render(faint.Width(innerWidth).Render(summary)), nil
+	}
+
+	// Header: ▶ path:line  [resolved] [outdated]   (▶ marks focused)
 	prefix := "╭─ "
 	if focused {
 		prefix = "▶ "
@@ -286,23 +374,19 @@ func (m *Model) renderReviewThread(
 	if resolved {
 		loc += "  [resolved]"
 	}
+	if outdated {
+		loc += "  [outdated]"
+	}
 	headerStyle := faint
 	if focused {
 		headerStyle = lipgloss.NewStyle().Foreground(m.ctx.Theme.PrimaryText).Bold(true)
 	}
-	header := headerStyle.Width(width).Render(loc)
+	header := headerStyle.Width(innerWidth).Render(loc)
 
 	// Diff hunk lifted from the *root* comment — every comment in the
-	// thread carries the same hunk; we render it once, faintly, as
-	// quoted-style code context above the conversation.
-	var hunk string
-	if h := strings.TrimRight(comments[0].DiffHunk, "\n"); h != "" {
-		var lines []string
-		for _, ln := range strings.Split(h, "\n") {
-			lines = append(lines, "│ "+ln)
-		}
-		hunk = faint.Render(strings.Join(lines, "\n"))
-	}
+	// thread carries the same hunk; render it once, colorized like a
+	// real diff, as quoted-style context above the conversation.
+	hunk := colorizeDiffHunk(comments[0].DiffHunk, m.ctx.Theme)
 
 	// Root comment uses the existing renderComment shape (with header
 	// trimmed because we already drew the location above). Replies use a
@@ -312,19 +396,19 @@ func (m *Model) renderReviewThread(
 		blocks = append(blocks, hunk)
 	}
 	for i, c := range comments {
-		prefix := "├─ "
+		p := "├─ "
 		if i == 0 {
-			prefix = "└─ "
+			p = "└─ "
 		}
 		who := lipgloss.JoinHorizontal(lipgloss.Top,
-			faint.Render(prefix),
+			faint.Render(p),
 			m.ctx.Styles.Common.MainTextStyle.Render(c.Author.Login),
 			" ",
 			faint.Render(utils.TimeElapsed(c.UpdatedAt)),
 		)
 		body := lineCleanupRegex.ReplaceAllString(c.Body, "")
 		body = m.injectHints(body)
-		rendered, err := markdown.Render(width, body)
+		rendered, err := markdown.Render(innerWidth, body)
 		if err != nil {
 			return "", err
 		}
@@ -332,23 +416,19 @@ func (m *Model) renderReviewThread(
 	}
 
 	all := append([]string{header}, blocks...)
+	conv := gutter.Render(lipgloss.JoinVertical(lipgloss.Left, all...))
+
+	// The inline reply input renders below the conversation when active.
+	// It's kept OUTSIDE the gutter wrapper because the editor is styled
+	// at the full sidebar width; wrapping it would overflow the gutter
+	// padding and reflow. The action legend lives in the activity-tab
+	// action bar now, so nothing else is appended.
 	if focused {
-		// Reply input renders inline below the focused thread's
-		// conversation when active — so the user can see the thread
-		// they're typing a reply to. Outside reply mode, show the
-		// action hint instead.
 		if reply := m.EditorReplyView(); reply != "" {
-			all = append(all, reply)
-		} else {
-			action := "x resolve"
-			if resolved {
-				action = "x unresolve"
-			}
-			hint := faint.Render("  n/N next/prev  r reply  " + action)
-			all = append(all, hint)
+			return lipgloss.JoinVertical(lipgloss.Left, conv, reply), nil
 		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, all...), nil
+	return conv, nil
 }
 
 func (m *Model) renderReviewDecision(decision string) string {

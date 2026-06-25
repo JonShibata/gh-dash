@@ -10,33 +10,34 @@ import (
 )
 
 type PRKeyMap struct {
-	PrevSidebarTab       key.Binding
-	NextSidebarTab       key.Binding
-	Approve              key.Binding
-	Assign               key.Binding
-	Unassign             key.Binding
-	Label                key.Binding
-	Comment              key.Binding
-	Diff                 key.Binding
-	Checkout             key.Binding
-	Close                key.Binding
-	SummaryViewMore      key.Binding
-	Ready                key.Binding
-	MarkDraft            key.Binding
-	Reopen               key.Binding
-	Merge                key.Binding
-	Update               key.Binding
-	WatchChecks          key.Binding
-	ApproveWorkflows     key.Binding
-	ToggleSmartFiltering key.Binding
-	ViewIssues           key.Binding
-	OpenFirstFailed      key.Binding
-	RerunFailedChecks    key.Binding
-	JenkinsRerun         key.Binding
-	ReviewThreadReply    key.Binding
-	NextReviewThread     key.Binding
-	PrevReviewThread     key.Binding
-	RequestReview        key.Binding
+	PrevSidebarTab           key.Binding
+	NextSidebarTab           key.Binding
+	Approve                  key.Binding
+	Assign                   key.Binding
+	Unassign                 key.Binding
+	Label                    key.Binding
+	Comment                  key.Binding
+	Diff                     key.Binding
+	Checkout                 key.Binding
+	Close                    key.Binding
+	SummaryViewMore          key.Binding
+	Ready                    key.Binding
+	MarkDraft                key.Binding
+	Reopen                   key.Binding
+	Merge                    key.Binding
+	Update                   key.Binding
+	WatchChecks              key.Binding
+	ApproveWorkflows         key.Binding
+	ToggleSmartFiltering     key.Binding
+	ViewIssues               key.Binding
+	OpenFirstFailed          key.Binding
+	RerunFailedChecks        key.Binding
+	JenkinsRerun             key.Binding
+	ReviewThreadReply        key.Binding
+	ReviewThreadReplyResolve key.Binding
+	NextReviewThread         key.Binding
+	PrevReviewThread         key.Binding
+	RequestReview            key.Binding
 }
 
 var PRKeys = PRKeyMap{
@@ -139,6 +140,13 @@ var PRKeys = PRKeyMap{
 		key.WithKeys("r"),
 		key.WithHelp("r", "reply to review thread"),
 	),
+	// Uppercase R overrides the universal "refresh all" binding ONLY in
+	// the same fullscreen/Activity/focused-thread scope as r (see ui.go).
+	// Replies and resolves the focused thread in one motion.
+	ReviewThreadReplyResolve: key.NewBinding(
+		key.WithKeys("R"),
+		key.WithHelp("R", "reply and resolve thread"),
+	),
 	NextReviewThread: key.NewBinding(
 		key.WithKeys("n"),
 		key.WithHelp("n", "next review thread"),
@@ -170,6 +178,7 @@ func PRFullHelp() [][]key.Binding {
 			PRKeys.Assign,
 			PRKeys.Unassign,
 			PRKeys.ReviewThreadReply,
+			PRKeys.ReviewThreadReplyResolve,
 			PRKeys.NextReviewThread,
 			PRKeys.PrevReviewThread,
 		},
@@ -273,6 +282,8 @@ func rebindPRKeys(keys []config.Keybinding) error {
 			key = &PRKeys.JenkinsRerun
 		case "reviewThreadReply":
 			key = &PRKeys.ReviewThreadReply
+		case "reviewThreadReplyResolve":
+			key = &PRKeys.ReviewThreadReplyResolve
 		default:
 			return fmt.Errorf("unknown built-in pr key: '%s'", prKey.Builtin)
 		}

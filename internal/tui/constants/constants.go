@@ -89,12 +89,13 @@ const (
 	SearchIcon       = "" // \uf002 nf-fa-search
 
 	// Prompts
-	AssignPrompt   = "Assign users (whitespace-separated)" + Ellipsis
-	UnassignPrompt = "Unassign users (whitespace-separated)" + Ellipsis
-	CommentPrompt  = "Leave a comment" + Ellipsis
-	ApprovalPrompt = "Approve with comment" + Ellipsis
-	LabelPrompt    = "Add/remove labels (comma-separated)" + Ellipsis
-	ReplyPrompt    = "Reply to review thread" + Ellipsis
+	AssignPrompt        = "Assign users (whitespace-separated)" + Ellipsis
+	UnassignPrompt      = "Unassign users (whitespace-separated)" + Ellipsis
+	CommentPrompt       = "Leave a comment" + Ellipsis
+	ApprovalPrompt      = "Approve with comment" + Ellipsis
+	LabelPrompt         = "Add/remove labels (comma-separated)" + Ellipsis
+	ReplyPrompt         = "Reply to review thread" + Ellipsis
+	ReplyResolvePrompt  = "Reply and resolve thread" + Ellipsis
 	RequestReviewPrompt = "Request review from users (whitespace-separated)" + Ellipsis
 
 	Logo = `▜▔▚▐▔▌▚▔▐ ▌

@@ -48,6 +48,11 @@ type Model struct {
 	// SetIsReplyingToReview when the editor opens; consumed by Update on
 	// submit. Zero when no reply is in flight.
 	replyTargetCommentId int
+	// replyThenResolveThreadId is the GraphQL node id of the thread to
+	// resolve after the reply posts, set by SetIsReplyingAndResolving (the
+	// R combo). Empty for a plain reply (r). Consumed and cleared by Update
+	// on submit alongside replyTargetCommentId.
+	replyThenResolveThreadId string
 	// threadCursorIdx is the index into allThreads() that the user has
 	// focused on the Activity tab. allThreads() is ordered oldest-first to
 	// match the rendered body, so idx 0 is the topmost thread. R/X act on
@@ -171,11 +176,26 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 		case cmpcontroller.ModeReplyReview:
 			target := m.replyTargetCommentId
+			resolveThreadId := m.replyThenResolveThreadId
 			m.replyTargetCommentId = 0
+			m.replyThenResolveThreadId = ""
 			if target == 0 || len(strings.TrimSpace(value)) == 0 {
 				return m, nil
 			}
-			return m, tasks.ReplyToReviewComment(m.ctx, sid, m.pr.Data.Primary, target, value)
+			replyCmd := tasks.ReplyToReviewComment(m.ctx, sid, m.pr.Data.Primary, target, value)
+			if resolveThreadId == "" {
+				return m, replyCmd
+			}
+			// R combo: post the reply AND resolve the thread, flipping
+			// the resolved state optimistically so the sidebar updates
+			// immediately. The two GitHub calls are independent (resolve
+			// keys on the thread id, reply on the root comment id), so
+			// order doesn't matter server-side.
+			return m, tea.Batch(
+				replyCmd,
+				tasks.ResolveReviewThread(m.ctx, sid, m.pr.Data.Primary, resolveThreadId),
+				tasks.EmitOptimisticThreadResolve(resolveThreadId, true),
+			)
 
 		case cmpcontroller.ModeRequestReview:
 			usernames := cmp.AllWords(value)
@@ -961,6 +981,26 @@ func (m *Model) SetSummaryViewLess() {
 	m.summaryViewMore = false
 }
 
+// SetThreadResolvedOptimistic flips a review thread's IsResolved flag in
+// the enriched data immediately, so the UI reflects a resolve/unresolve
+// the instant the user confirms it instead of waiting for the next
+// refetch. Mutates the SOURCE slice in place by index (allThreads()
+// returns a copy, so mutating that would be lost). The next EnrichedPrMsg
+// overwrites Enriched wholesale (SetEnrichedPR), reconciling to server
+// truth — so a failed mutation simply reverts on the next tick.
+func (m *Model) SetThreadResolvedOptimistic(id string, resolved bool) {
+	if m.pr == nil || m.pr.Data == nil || !m.pr.Data.IsEnriched {
+		return
+	}
+	nodes := m.pr.Data.Enriched.ReviewThreads.Nodes
+	for i := range nodes {
+		if nodes[i].Id == id {
+			nodes[i].IsResolved = resolved
+			return
+		}
+	}
+}
+
 func (m *Model) SetEnrichedPR(data data.EnrichedPullRequestData) {
 	if m.pr.Data.Primary.Url == data.Url {
 		m.pr.Data.Enriched = data
@@ -1103,6 +1143,22 @@ func (m *Model) GetIsReplyingToReview() bool {
 // cmpcontroller layer is shared with the issue view and doesn't carry
 // per-feature payloads.
 func (m *Model) SetIsReplyingToReview(isReplying bool) tea.Cmd {
+	return m.enterReplyEditor(isReplying, false)
+}
+
+// SetIsReplyingAndResolving opens the inline reply editor like
+// SetIsReplyingToReview, but also records the focused thread so that on
+// submit the reply is posted AND the thread is resolved in one motion
+// (the R combo). Closing (isReplying=false) clears the pending resolve.
+func (m *Model) SetIsReplyingAndResolving(isReplying bool) tea.Cmd {
+	return m.enterReplyEditor(isReplying, true)
+}
+
+// enterReplyEditor is the shared open/close path for the r (reply) and R
+// (reply+resolve) actions. When alsoResolve is true it stashes the
+// focused thread's GraphQL id so Update can batch a resolve after the
+// reply on submit.
+func (m *Model) enterReplyEditor(isReplying, alsoResolve bool) tea.Cmd {
 	if m.pr == nil {
 		return nil
 	}
@@ -1112,6 +1168,7 @@ func (m *Model) SetIsReplyingToReview(isReplying bool) tea.Cmd {
 			m.editor.Exit()
 		}
 		m.replyTargetCommentId = 0
+		m.replyThenResolveThreadId = ""
 		return nil
 	}
 
@@ -1120,10 +1177,20 @@ func (m *Model) SetIsReplyingToReview(isReplying bool) tea.Cmd {
 		return nil
 	}
 	m.replyTargetCommentId = target
+	m.replyThenResolveThreadId = ""
+	if alsoResolve {
+		if t, ok := m.focusedThread(); ok {
+			m.replyThenResolveThreadId = t.Id
+		}
+	}
 
+	prompt := constants.ReplyPrompt
+	if alsoResolve {
+		prompt = constants.ReplyResolvePrompt
+	}
 	cmd := m.editor.Enter(cmpcontroller.EnterOptions{
 		Mode:                             cmpcontroller.ModeReplyReview,
-		Prompt:                           constants.ReplyPrompt,
+		Prompt:                           prompt,
 		Source:                           cmp.UserMentionSource{},
 		Repo:                             m.repoRef(),
 		SuggestionKind:                   cmpcontroller.SuggestionUsers,
@@ -1178,6 +1245,26 @@ func (m *Model) focusedThread() (data.ReviewThread, bool) {
 		idx = len(threads) - 1
 	}
 	return threads[idx], true
+}
+
+// focusedThreadPosition returns the 0-based index of the focused thread
+// and the total thread count, clamped to match focusedThread(). ok=false
+// when there are no threads. Used by the activity-tab action bar to show
+// "n/m" so the user can see which thread x/r/R will act on.
+func (m *Model) focusedThreadPosition() (idx, count int, ok bool) {
+	threads := m.allThreads()
+	count = len(threads)
+	if count == 0 {
+		return 0, 0, false
+	}
+	idx = m.threadCursorIdx
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= count {
+		idx = count - 1
+	}
+	return idx, count, true
 }
 
 // pickReplyTarget returns the root-comment databaseId of the focused
