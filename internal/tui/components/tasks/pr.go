@@ -33,6 +33,26 @@ type UpdatePRMsg struct {
 	Labels           *data.PRLabels
 }
 
+// OptimisticThreadResolveMsg asks the UI to flip a review thread's
+// resolved state immediately, before the resolve/unresolve GraphQL
+// mutation round-trips. Emitted alongside the mutation task (post-confirm)
+// so the change is responsive; reconciled to server truth on the next
+// enriched refetch.
+type OptimisticThreadResolveMsg struct {
+	ThreadId string
+	Resolved bool
+}
+
+// EmitOptimisticThreadResolve returns a command that delivers an
+// OptimisticThreadResolveMsg. Batch it with ResolveReviewThread /
+// UnresolveReviewThread so the optimistic flip and the mutation fire
+// together.
+func EmitOptimisticThreadResolve(threadId string, resolved bool) tea.Cmd {
+	return func() tea.Msg {
+		return OptimisticThreadResolveMsg{ThreadId: threadId, Resolved: resolved}
+	}
+}
+
 type UpdateBranchMsg struct {
 	Name      string
 	IsCreated *bool

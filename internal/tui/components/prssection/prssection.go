@@ -126,9 +126,18 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 						// per-action data isn't otherwise plumbed
 						// through.
 						if tid, ok := strings.CutPrefix(action, "resolveThread:"); ok && tid != "" {
-							cmd = tasks.ResolveReviewThread(m.Ctx, sid, pr, tid)
+							// Batch the optimistic flip with the mutation so
+							// the sidebar reflects the resolve instantly; the
+							// task itself only lands after a refetch.
+							cmd = tea.Batch(
+								tasks.ResolveReviewThread(m.Ctx, sid, pr, tid),
+								tasks.EmitOptimisticThreadResolve(tid, true),
+							)
 						} else if tid, ok := strings.CutPrefix(action, "unresolveThread:"); ok && tid != "" {
-							cmd = tasks.UnresolveReviewThread(m.Ctx, sid, pr, tid)
+							cmd = tea.Batch(
+								tasks.UnresolveReviewThread(m.Ctx, sid, pr, tid),
+								tasks.EmitOptimisticThreadResolve(tid, false),
+							)
 						}
 					}
 				}

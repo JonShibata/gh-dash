@@ -273,6 +273,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prView.NextTab()
 				m.syncSidebar()
 				return m, nil
+			case onActivity && hasThread && key.Matches(msg, keys.PRKeys.ReviewThreadReplyResolve):
+				// R → reply to the focused thread AND resolve it on
+				// submit. Wins over the global "refresh all" binding only
+				// inside this scope (same precedent as r). Checked before
+				// r so the uppercase combo isn't shadowed by it.
+				return m, m.openSidebarForReply(m.prView.SetIsReplyingAndResolving)
 			case onActivity && hasThread && key.Matches(msg, keys.PRKeys.ReviewThreadReply):
 				// r → reply to focused thread. Wins over the global
 				// Refresh binding only inside this scope. Uses the
@@ -961,6 +967,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.syncSidebar())
 			}
 		}
+
+	case tasks.OptimisticThreadResolveMsg:
+		// Flip the focused thread's resolved state in the sidebar
+		// immediately on confirm, then re-render. The GraphQL mutation
+		// runs in parallel; the next enriched refetch reconciles.
+		m.prView.SetThreadResolvedOptimistic(msg.ThreadId, msg.Resolved)
+		cmds = append(cmds, m.syncSidebar())
 
 	case prview.EnrichedPrMsg:
 		if msg.Err == nil {
