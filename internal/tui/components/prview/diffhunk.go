@@ -4,35 +4,46 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+)
 
-	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
+// GitHub light diff palette, matching the code-block colors already used
+// in the sidebar. Each line is rendered as a full-width row with a
+// BACKGROUND fill so the hunk reads like a real diff (green = added,
+// red = removed) rather than relying on faint foreground text.
+var (
+	diffAddStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#116329")).
+			Background(lipgloss.Color("#DAFBE1"))
+	diffDelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#82071E")).
+			Background(lipgloss.Color("#FFEBE9"))
+	diffHdrStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#0550AE")).
+			Background(lipgloss.Color("#DDF4FF"))
+	diffCtxStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#24292F")).
+			Background(lipgloss.Color("#EAEEF2"))
 )
 
 // colorizeDiffHunk renders a unified-diff hunk (GitHub's DiffHunk field
-// for an inline review thread) with diff coloring so the code context
-// above a comment reads like a real diff instead of flat faint text:
+// for an inline review thread) as a stack of background-filled rows:
 //
-//	@@ … @@   → warning (hunk header)
-//	+added    → success (green)
-//	-removed  → error (red)
-//	 context  → faint
-//	\ No newline at end of file → faint
+//	@@ … @@   → blue row (hunk header)
+//	+added    → green row
+//	-removed  → red row
+//	 context  → neutral row
 //
-// Every line keeps the leading "│ " rule (rendered faint) so the block
-// still indents as quoted context under the thread location header. The
-// output has exactly one line per input line, so the caller's
-// height/offset bookkeeping is unaffected.
-func colorizeDiffHunk(hunk string, t theme.Theme) string {
+// Each input line becomes exactly one output line, filled to `width` so
+// the background spans the row; long lines are truncated rather than
+// wrapped so the caller's height/offset bookkeeping is unaffected.
+func colorizeDiffHunk(hunk string, width int) string {
 	hunk = strings.TrimRight(hunk, "\n")
 	if hunk == "" {
 		return ""
 	}
-
-	rule := lipgloss.NewStyle().Foreground(t.FaintText).Render("│ ")
-	context := lipgloss.NewStyle().Foreground(t.FaintText)
-	added := lipgloss.NewStyle().Foreground(t.SuccessText)
-	removed := lipgloss.NewStyle().Foreground(t.ErrorText)
-	header := lipgloss.NewStyle().Foreground(t.WarningText).Bold(true)
+	if width < 1 {
+		width = 1
+	}
 
 	lines := strings.Split(hunk, "\n")
 	out := make([]string, 0, len(lines))
@@ -40,17 +51,20 @@ func colorizeDiffHunk(hunk string, t theme.Theme) string {
 		var style lipgloss.Style
 		switch {
 		case strings.HasPrefix(ln, "@@"):
-			style = header
+			style = diffHdrStyle
 		case strings.HasPrefix(ln, "+"):
-			style = added
+			style = diffAddStyle
 		case strings.HasPrefix(ln, "-"):
-			style = removed
+			style = diffDelStyle
 		default:
 			// Context lines (leading space) and the "\ No newline at end
-			// of file" trailer both read as faint.
-			style = context
+			// of file" trailer get the neutral row.
+			style = diffCtxStyle
 		}
-		out = append(out, rule+style.Render(ln))
+		// Truncate to width first (no wrap → one row per input line),
+		// then fill the background out to the full width.
+		content := lipgloss.NewStyle().MaxWidth(width).Render(ln)
+		out = append(out, style.Width(width).Render(content))
 	}
 	return strings.Join(out, "\n")
 }

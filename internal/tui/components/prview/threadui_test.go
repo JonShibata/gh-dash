@@ -126,9 +126,11 @@ func TestResolvedThreadCollapsesWhenNotFocused(t *testing.T) {
 
 	rendered, err := m.renderReviewThread("file.go", 1, true /*resolved*/, false /*outdated*/, false /*focused*/, m.allThreads()[0].Comments.Nodes)
 	require.NoError(t, err)
-	// Collapsed form is one line with the ✓ summary marker.
+	// Collapsed form is one line with the ✓ resolved pill + location.
 	require.Equal(t, 1, len(splitNonEmpty(stripANSI(rendered))))
-	require.Contains(t, stripANSI(rendered), "✓ file.go:1")
+	visible := stripANSI(rendered)
+	require.Contains(t, visible, "✓ resolved")
+	require.Contains(t, visible, "file.go:1")
 }
 
 func splitNonEmpty(s string) []string {
