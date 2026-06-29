@@ -44,7 +44,9 @@ func newTestModelWithWidth(t *testing.T, prData *data.PullRequestData, width int
 			IsEnriched: true,
 			Enriched: data.EnrichedPullRequestData{
 				ReviewRequests: prData.ReviewRequests,
-				Reviews:        prData.Reviews,
+				// The reviewers section reads LatestReviews (one node per
+				// author), not Reviews. Tests feed their review set here.
+				LatestReviews: prData.Reviews,
 			},
 		},
 	}
@@ -57,7 +59,11 @@ func newTestModelWithWidth(t *testing.T, prData *data.PullRequestData, width int
 func TestRenderRequestedReviewers(t *testing.T) {
 	testCases := map[string]struct {
 		reviewRequests []data.ReviewRequestNode
+		// reviews maps to latestReviews (one node per author); opinionated
+		// maps to latestOpinionatedReviews (latest APPROVED/CHANGES_REQUESTED
+		// per author), which takes precedence when both are present.
 		reviews        []data.Review
+		opinionated    []data.Review
 		wantContains   []string
 		wantNotContain []string
 	}{
@@ -204,11 +210,33 @@ func TestRenderRequestedReviewers(t *testing.T) {
 			},
 			wantContains: []string{"Reviewers", "@charlie", constants.CommentIcon},
 		},
-		"reviewer who approved then commented": {
+		"reviewer whose review was dismissed is still listed": {
+			// latestReviews reports the author's most recent review; when
+			// that is DISMISSED (e.g. dismissed after a new push) the author
+			// still reviewed and must appear.
 			reviewRequests: []data.ReviewRequestNode{},
 			reviews: []data.Review{
-				{Author: struct{ Login string }{Login: "alice"}, State: "APPROVED"},
+				{Author: struct{ Login string }{Login: "dana"}, State: "DISMISSED"},
+			},
+			wantContains: []string{"Reviewers", "@dana", constants.CommentIcon},
+		},
+		"reviewer with only a pending draft is not listed": {
+			reviewRequests: []data.ReviewRequestNode{},
+			reviews: []data.Review{
+				{Author: struct{ Login string }{Login: "erin"}, State: "PENDING"},
+			},
+			wantContains:   []string{},
+			wantNotContain: []string{"@erin"},
+		},
+		"reviewer who approved then commented": {
+			// latestReviews shows the comment (most recent); the approval
+			// comes from latestOpinionatedReviews and must win.
+			reviewRequests: []data.ReviewRequestNode{},
+			reviews: []data.Review{
 				{Author: struct{ Login string }{Login: "alice"}, State: "COMMENTED"},
+			},
+			opinionated: []data.Review{
+				{Author: struct{ Login string }{Login: "alice"}, State: "APPROVED"},
 			},
 			wantContains:   []string{"Reviewers", "@alice", constants.ApprovedIcon},
 			wantNotContain: []string{constants.CommentIcon},
@@ -216,8 +244,10 @@ func TestRenderRequestedReviewers(t *testing.T) {
 		"reviewer who requested changes then commented": {
 			reviewRequests: []data.ReviewRequestNode{},
 			reviews: []data.Review{
-				{Author: struct{ Login string }{Login: "bob"}, State: "CHANGES_REQUESTED"},
 				{Author: struct{ Login string }{Login: "bob"}, State: "COMMENTED"},
+			},
+			opinionated: []data.Review{
+				{Author: struct{ Login string }{Login: "bob"}, State: "CHANGES_REQUESTED"},
 			},
 			wantContains:   []string{"Reviewers", "@bob", constants.ChangesRequestedIcon},
 			wantNotContain: []string{constants.CommentIcon},
@@ -261,6 +291,10 @@ func TestRenderRequestedReviewers(t *testing.T) {
 			}
 
 			m := newTestModel(t, prData)
+			m.pr.Data.Enriched.LatestOpinionatedReviews = data.Reviews{
+				TotalCount: len(tc.opinionated),
+				Nodes:      tc.opinionated,
+			}
 			got := ansi.Strip(m.renderRequestedReviewers())
 
 			if len(tc.wantContains) == 0 {
@@ -278,6 +312,38 @@ func TestRenderRequestedReviewers(t *testing.T) {
 					"expected output to NOT contain %q, got: %q", notWant, got)
 			}
 		})
+	}
+}
+
+// Reviewers sourced from the reviewStates map (people who reviewed but
+// weren't explicitly requested) must render in a STABLE, alphabetical
+// order. Before sorting, Go's randomized map iteration reshuffled them on
+// every render, so the section visibly re-ordered on any repaint.
+func TestRenderRequestedReviewersDeterministicOrder(t *testing.T) {
+	// Deliberately not alphabetical, and >1 so map order can vary.
+	reviews := []data.Review{
+		{Author: struct{ Login string }{Login: "zoe"}, State: "APPROVED"},
+		{Author: struct{ Login string }{Login: "alice"}, State: "APPROVED"},
+		{Author: struct{ Login string }{Login: "mike"}, State: "APPROVED"},
+		{Author: struct{ Login string }{Login: "bob"}, State: "APPROVED"},
+	}
+	prData := &data.PullRequestData{
+		ReviewRequests: data.ReviewRequests{},
+		Reviews:        data.Reviews{TotalCount: len(reviews), Nodes: reviews},
+	}
+	m := newTestModel(t, prData)
+
+	first := ansi.Strip(m.renderRequestedReviewers())
+
+	// Order is alphabetical by login.
+	idx := func(login string) int { return strings.Index(first, login) }
+	require.True(t, idx("alice") < idx("bob") && idx("bob") < idx("mike") && idx("mike") < idx("zoe"),
+		"reviewers should be alphabetical, got: %q", first)
+
+	// Stable across many renders (would flake under map randomization).
+	for i := 0; i < 50; i++ {
+		require.Equal(t, first, ansi.Strip(m.renderRequestedReviewers()),
+			"render %d differs — order is not deterministic", i)
 	}
 }
 
