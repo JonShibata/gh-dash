@@ -233,12 +233,19 @@ func (m *Model) renderThreadActionBar() string {
 // renderThreadHints renders the always-visible key legend shown beneath
 // the focused thread, so the available actions stay reachable without
 // scrolling back to the top-of-tab action bar.
-func (m *Model) renderThreadHints(resolved bool) string {
+func (m *Model) renderThreadHints(resolved bool, width int) string {
 	action := "x resolve"
 	if resolved {
 		action = "x unresolve"
 	}
-	return lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).
+	// Sit the legend on the same selected-bg band as the active header so
+	// the two bracket the active comment. SecondaryText (not FaintText) so
+	// it stays legible against the band.
+	return lipgloss.NewStyle().
+		Foreground(m.ctx.Theme.SecondaryText).
+		Background(m.ctx.Theme.SelectedBackground).
+		Width(width).
+		MaxHeight(1).
 		Render("  n/N prev/next · r reply · R reply+resolve · " + action)
 }
 
@@ -331,6 +338,18 @@ func (m *Model) renderReviewHeader(review data.Review) string {
 // leading directories so the filename + line number — what you navigate
 // by — always survive.
 func (m *Model) renderThreadHeader(path string, line int, resolved, outdated, focused, expanded bool, width int) string {
+	// The active (focused) thread sits on a full-width selected-bg band so
+	// the comment reads as bounded/selected — the same color the list views
+	// use for the cursor row. Each text segment carries the background
+	// explicitly so a nested ANSI reset can't punch a hole between the
+	// pills; the outer Width fill then extends the band to the right edge.
+	base := lipgloss.NewStyle()
+	sep := " "
+	if focused {
+		base = base.Background(m.ctx.Theme.SelectedBackground)
+		sep = base.Render(" ")
+	}
+
 	// State pills: resolved = green, outdated = light orange. Background
 	// fills so they read as badges, matching the diff-row treatment.
 	resolvedPill := lipgloss.NewStyle().
@@ -344,22 +363,23 @@ func (m *Model) renderThreadHeader(path string, line int, resolved, outdated, fo
 
 	var parts []string
 	if resolved {
-		parts = append(parts, resolvedPill.Render("✓ resolved"), " ")
+		parts = append(parts, resolvedPill.Render("✓ resolved"), sep)
 	}
 	if outdated {
-		parts = append(parts, outdatedPill.Render("outdated"), " ")
+		parts = append(parts, outdatedPill.Render("outdated"), sep)
 	}
 	pills := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 
 	// Disclosure triangle encodes body state; focus is carried by the
-	// gutter accent + bold path, so the marker is free to mean expanded.
+	// gutter accent + bold path (+ the selected band), so the marker is
+	// free to mean expanded.
 	marker := "▸ "
 	if expanded {
 		marker = "▾ "
 	}
-	headerStyle := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
+	headerStyle := base.Foreground(m.ctx.Theme.FaintText)
 	if focused {
-		headerStyle = lipgloss.NewStyle().Foreground(m.ctx.Theme.PrimaryText).Bold(true)
+		headerStyle = base.Foreground(m.ctx.Theme.PrimaryText).Bold(true)
 	}
 
 	pathLine := fmt.Sprintf("%s:%d", path, line)
@@ -373,7 +393,12 @@ func (m *Model) renderThreadHeader(path string, line int, resolved, outdated, fo
 		pathLine = constants.Ellipsis + ansi.TruncateLeft(pathLine, lipgloss.Width(pathLine)-budget+1, "")
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, pills, headerStyle.Render(marker+pathLine))
+	header := lipgloss.JoinHorizontal(lipgloss.Top, pills, headerStyle.Render(marker+pathLine))
+	if focused {
+		// Pad the band to the full width so the fill reaches the right edge.
+		header = base.Width(width).MaxHeight(1).Render(header)
+	}
+	return header
 }
 
 // renderReviewThread renders one inline-review thread as a grouped block
@@ -481,7 +506,7 @@ func (m *Model) renderReviewThread(
 	// top-of-tab action bar. Suppressed while the reply editor is open
 	// (the editor takes its place).
 	if focused && m.EditorReplyView() == "" {
-		all = append(all, m.renderThreadHints(resolved))
+		all = append(all, m.renderThreadHints(resolved, innerWidth))
 	}
 	conv := gutter.Render(lipgloss.JoinVertical(lipgloss.Left, all...))
 

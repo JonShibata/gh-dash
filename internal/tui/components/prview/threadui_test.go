@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
@@ -180,6 +181,25 @@ func TestLongPathTruncatesButKeepsPills(t *testing.T) {
 	require.NotContains(t, visible, "internal/tui")
 	// Still a single collapsed line.
 	require.Equal(t, 1, len(splitNonEmpty(visible)))
+}
+
+// The active thread's header and its inline hint menu are laid on a
+// full-width selected-bg band (filled to the given width); an inactive
+// header is only as wide as its content. This is what visually bounds the
+// active comment.
+func TestActiveThreadHeaderAndHintsFillWidthBand(t *testing.T) {
+	m := modelWithThreads(t, thread("t1", 11, false, time.Now()))
+	m.SetWidth(80)
+	const w = 50
+
+	active := m.renderThreadHeader("file.go", 1, false, false, true /*focused*/, true /*expanded*/, w)
+	require.Equal(t, w, lipgloss.Width(active), "active header should fill the band width")
+
+	inactive := m.renderThreadHeader("file.go", 1, false, false, false /*focused*/, true /*expanded*/, w)
+	require.Less(t, lipgloss.Width(inactive), w, "inactive header should not be padded into a band")
+
+	hints := m.renderThreadHints(false, w)
+	require.Equal(t, w, lipgloss.Width(hints), "hint menu should fill the band width")
 }
 
 func splitNonEmpty(s string) []string {
