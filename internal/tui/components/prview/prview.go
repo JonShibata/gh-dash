@@ -489,7 +489,19 @@ func (m *Model) renderRequestedReviewers() string {
 		reviewerItems = append(reviewerItems, reviewerItem{text: reviewerStr})
 	}
 
-	for login, state := range reviewStates {
+	// Iterate reviewStates in sorted login order. Go randomizes map
+	// iteration, so without this the reviewers sourced from here (people
+	// who reviewed but weren't explicitly requested) reshuffle on every
+	// render — the section visibly re-orders on any repaint, e.g. pressing
+	// left while already on the overview tab.
+	reviewedLogins := make([]string, 0, len(reviewStates))
+	for login := range reviewStates {
+		reviewedLogins = append(reviewedLogins, login)
+	}
+	sort.Strings(reviewedLogins)
+
+	for _, login := range reviewedLogins {
+		state := reviewStates[login]
 		if shownReviewers[login] {
 			continue
 		}

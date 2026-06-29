@@ -281,6 +281,38 @@ func TestRenderRequestedReviewers(t *testing.T) {
 	}
 }
 
+// Reviewers sourced from the reviewStates map (people who reviewed but
+// weren't explicitly requested) must render in a STABLE, alphabetical
+// order. Before sorting, Go's randomized map iteration reshuffled them on
+// every render, so the section visibly re-ordered on any repaint.
+func TestRenderRequestedReviewersDeterministicOrder(t *testing.T) {
+	// Deliberately not alphabetical, and >1 so map order can vary.
+	reviews := []data.Review{
+		{Author: struct{ Login string }{Login: "zoe"}, State: "APPROVED"},
+		{Author: struct{ Login string }{Login: "alice"}, State: "APPROVED"},
+		{Author: struct{ Login string }{Login: "mike"}, State: "APPROVED"},
+		{Author: struct{ Login string }{Login: "bob"}, State: "APPROVED"},
+	}
+	prData := &data.PullRequestData{
+		ReviewRequests: data.ReviewRequests{},
+		Reviews:        data.Reviews{TotalCount: len(reviews), Nodes: reviews},
+	}
+	m := newTestModel(t, prData)
+
+	first := ansi.Strip(m.renderRequestedReviewers())
+
+	// Order is alphabetical by login.
+	idx := func(login string) int { return strings.Index(first, login) }
+	require.True(t, idx("alice") < idx("bob") && idx("bob") < idx("mike") && idx("mike") < idx("zoe"),
+		"reviewers should be alphabetical, got: %q", first)
+
+	// Stable across many renders (would flake under map randomization).
+	for i := 0; i < 50; i++ {
+		require.Equal(t, first, ansi.Strip(m.renderRequestedReviewers()),
+			"render %d differs — order is not deterministic", i)
+	}
+}
+
 func TestRenderRequestedReviewersWrapping(t *testing.T) {
 	// Create multiple reviewers that would exceed a narrow width
 	reviewRequests := []data.ReviewRequestNode{}
