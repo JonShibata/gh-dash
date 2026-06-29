@@ -11,19 +11,39 @@ import (
 	"github.com/alecthomas/chroma/v2/formatters"
 )
 
-// codeBgMarker is the truecolor SGR fragment our chroma formatter
-// stamps onto every code token. Used as a substring marker on the
-// line — without the trailing 'm' so it still matches when chroma
-// follows the bg parameter with foreground/style parameters in the
-// same SGR sequence (e.g. "\x1b[48;2;234;238;242;38;2;5;80;174m").
+// codeBgHex is the code-block background.
 //
 // #EAEEF2 is GitHub's "neutral.subtle" — slightly darker than the
 // PrettyLights default code-block bg (#F6F8FA, which read as too
 // light against the dark gh-dash canvas) but lighter than the
 // previous attempt at #D8DEE4 (a touch too dark). Paired chroma
-// palette lives in theme.go.
-const codeBgMarker = "\x1b[48;2;234;238;242"
+// palette lives in theme.go. It mirrors Theme.DiffContextBg's light
+// value; making it adaptive is a follow-up — the chroma formatter is a
+// process-global registered func with no access to the runtime theme,
+// and CodeBgMarker is string-matched, so what's emitted and what's
+// matched must stay byte-identical.
 const codeBgHex = "#EAEEF2"
+
+// CodeBgMarker is the truecolor background SGR fragment our chroma
+// formatter stamps onto every code token, DERIVED from codeBgHex so the
+// two can't drift (e.g. "\x1b[48;2;234;238;242"). It's the single source
+// of truth: formatCodeBackgrounded emits it, padCodeBlockLines matches on
+// it, and the GHD_DUMP_RENDER diagnostics reference it. The trailing 'm'
+// is omitted so it still matches when chroma appends fg/style parameters
+// to the same SGR (e.g. "\x1b[48;2;234;238;242;38;2;5;80;174m").
+var CodeBgMarker = bgSGRMarker(codeBgHex)
+
+// bgSGRMarker turns "#RRGGBB" into the truecolor background SGR prefix
+// "\x1b[48;2;R;G;B" (no trailing 'm').
+func bgSGRMarker(hex string) string {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		return ""
+	}
+	var r, g, b int
+	fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
+	return fmt.Sprintf("\x1b[48;2;%d;%d;%d", r, g, b)
+}
 
 // codeChromaFormatter is the registered name we hand to glamour via
 // WithChromaFormatter. The custom formatter wraps every chroma token
@@ -52,7 +72,7 @@ func formatCodeBackgrounded(w io.Writer, style *chroma.Style, it chroma.Iterator
 	for token := it(); token != chroma.EOF; token = it() {
 		entry := style.Get(token.Type)
 		var sgr strings.Builder
-		sgr.WriteString("\x1b[48;2;234;238;242") // bg #EAEEF2
+		sgr.WriteString(CodeBgMarker)
 		if entry.Bold == chroma.Yes {
 			sgr.WriteString(";1")
 		}
@@ -104,7 +124,7 @@ func formatCodeBackgrounded(w io.Writer, style *chroma.Style, it chroma.Iterator
 // reset that follows the last bg token). Anything before/after that
 // is glamour's wrap framing.
 func padCodeBlockLines(rendered string, width int) string {
-	if width <= 0 || !strings.Contains(rendered, codeBgMarker) {
+	if width <= 0 || !strings.Contains(rendered, CodeBgMarker) {
 		return rendered
 	}
 	const indent = "  "
@@ -112,7 +132,7 @@ func padCodeBlockLines(rendered string, width int) string {
 	indentStripe := bg.Render(indent)
 	lines := strings.Split(rendered, "\n")
 	for i, line := range lines {
-		firstBg := strings.Index(line, codeBgMarker)
+		firstBg := strings.Index(line, CodeBgMarker)
 		if firstBg < 0 {
 			continue
 		}
@@ -120,8 +140,8 @@ func padCodeBlockLines(rendered string, width int) string {
 		// the LAST bg marker, skip its SGR (up through the next 'm'),
 		// then find the FIRST reset that follows. Prefer the explicit
 		// `\x1b[0m`; fall back to the bare `\x1b[m` form.
-		lastBg := strings.LastIndex(line, codeBgMarker)
-		afterMarker := line[lastBg+len(codeBgMarker):]
+		lastBg := strings.LastIndex(line, CodeBgMarker)
+		afterMarker := line[lastBg+len(CodeBgMarker):]
 		sgrEnd := strings.IndexByte(afterMarker, 'm')
 		if sgrEnd < 0 {
 			continue
@@ -135,7 +155,7 @@ func padCodeBlockLines(rendered string, width int) string {
 		} else {
 			resetEnd = len(tail)
 		}
-		coreEnd := lastBg + len(codeBgMarker) + sgrEnd + 1 + resetEnd
+		coreEnd := lastBg + len(CodeBgMarker) + sgrEnd + 1 + resetEnd
 		core := line[firstBg:coreEnd]
 		coreVisW := lipgloss.Width(core)
 		padW := width - len(indent) - coreVisW

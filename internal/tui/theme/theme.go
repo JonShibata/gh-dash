@@ -11,6 +11,12 @@ import (
 
 type Theme struct {
 	SelectedBackground      compat.AdaptiveColor // config.Theme.Colors.Background.Selected
+	ActiveBackground        compat.AdaptiveColor // config.Theme.Colors.Background.Active
+	DiffAddedBg             compat.AdaptiveColor // config.Theme.Colors.Diff.Added
+	DiffRemovedBg           compat.AdaptiveColor // config.Theme.Colors.Diff.Removed
+	DiffHeaderBg            compat.AdaptiveColor // config.Theme.Colors.Diff.Header
+	DiffContextBg           compat.AdaptiveColor // config.Theme.Colors.Diff.Context
+	DiffText                compat.AdaptiveColor // config.Theme.Colors.Diff.Text
 	PrimaryBorder           compat.AdaptiveColor // config.Theme.Colors.Border.Primary
 	FaintBorder             compat.AdaptiveColor // config.Theme.Colors.Border.Faint
 	SecondaryBorder         compat.AdaptiveColor // config.Theme.Colors.Border.Secondary
@@ -48,6 +54,37 @@ var DefaultTheme = &Theme{
 	SelectedBackground: compat.AdaptiveColor{
 		Light: lipgloss.ANSIColor(7),
 		Dark:  lipgloss.ANSIColor(236),
+	},
+	// ActiveBackground bounds the active review comment. Deliberately
+	// distinct from SelectedBackground (which marks selected line numbers
+	// / list rows): a soft lavender in light terminals, muted indigo in
+	// dark, so it reads as "active" without colliding with selection.
+	ActiveBackground: compat.AdaptiveColor{
+		Light: lipgloss.Color("#EDE7F6"),
+		Dark:  lipgloss.Color("#2A2440"),
+	},
+	// GitHub diff palette (background fills; DiffText is the uniform fg).
+	// Light = GitHub light tints; Dark = muted equivalents so the diff
+	// card adapts instead of being forced light on a dark canvas.
+	DiffAddedBg: compat.AdaptiveColor{
+		Light: lipgloss.Color("#DAFBE1"),
+		Dark:  lipgloss.Color("#12261E"),
+	},
+	DiffRemovedBg: compat.AdaptiveColor{
+		Light: lipgloss.Color("#FFEBE9"),
+		Dark:  lipgloss.Color("#25171C"),
+	},
+	DiffHeaderBg: compat.AdaptiveColor{
+		Light: lipgloss.Color("#DDF4FF"),
+		Dark:  lipgloss.Color("#121D2F"),
+	},
+	DiffContextBg: compat.AdaptiveColor{
+		Light: lipgloss.Color("#EAEEF2"),
+		Dark:  lipgloss.Color("#161B22"),
+	},
+	DiffText: compat.AdaptiveColor{
+		Light: lipgloss.Color("#1F2328"),
+		Dark:  lipgloss.Color("#E6EDF3"),
 	},
 	FaintBorder: compat.AdaptiveColor{
 		Light: lipgloss.ANSIColor(254),
@@ -138,6 +175,30 @@ func ParseTheme(cfg *config.Config) Theme {
 		DefaultTheme.SelectedBackground = _shimColor(
 			cfg.Theme.Colors.Inline.Background.Selected,
 			DefaultTheme.SelectedBackground,
+		)
+		DefaultTheme.ActiveBackground = _shimColor(
+			cfg.Theme.Colors.Inline.Background.Active,
+			DefaultTheme.ActiveBackground,
+		)
+		DefaultTheme.DiffAddedBg = _shimColor(
+			cfg.Theme.Colors.Inline.Diff.Added,
+			DefaultTheme.DiffAddedBg,
+		)
+		DefaultTheme.DiffRemovedBg = _shimColor(
+			cfg.Theme.Colors.Inline.Diff.Removed,
+			DefaultTheme.DiffRemovedBg,
+		)
+		DefaultTheme.DiffHeaderBg = _shimColor(
+			cfg.Theme.Colors.Inline.Diff.Header,
+			DefaultTheme.DiffHeaderBg,
+		)
+		DefaultTheme.DiffContextBg = _shimColor(
+			cfg.Theme.Colors.Inline.Diff.Context,
+			DefaultTheme.DiffContextBg,
+		)
+		DefaultTheme.DiffText = _shimColor(
+			cfg.Theme.Colors.Inline.Diff.Text,
+			DefaultTheme.DiffText,
 		)
 		DefaultTheme.PrimaryBorder = _shimColor(
 			cfg.Theme.Colors.Inline.Border.Primary,

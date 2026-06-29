@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/cmpcontroller"
@@ -232,12 +233,19 @@ func (m *Model) renderThreadActionBar() string {
 // renderThreadHints renders the always-visible key legend shown beneath
 // the focused thread, so the available actions stay reachable without
 // scrolling back to the top-of-tab action bar.
-func (m *Model) renderThreadHints(resolved bool) string {
+func (m *Model) renderThreadHints(resolved bool, width int) string {
 	action := "x resolve"
 	if resolved {
 		action = "x unresolve"
 	}
-	return lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).
+	// Sit the legend on the same active-bg band as the active header so
+	// the two bracket the active comment. SecondaryText (not FaintText) so
+	// it stays legible against the band.
+	return lipgloss.NewStyle().
+		Foreground(m.ctx.Theme.SecondaryText).
+		Background(m.ctx.Theme.ActiveBackground).
+		Width(width).
+		MaxHeight(1).
 		Render("  n/N prev/next · r reply · R reply+resolve · " + action)
 }
 
@@ -314,6 +322,88 @@ func (m *Model) renderReviewHeader(review data.Review) string {
 	)
 }
 
+// renderThreadHeader builds the one-line location header shared by a
+// thread's collapsed and expanded views, keeping the two consistent: the
+// only thing that changes on focus/expand is the disclosure triangle and
+// whether the body follows — the header itself stays put.
+//
+// State pills are LEFT-anchored. That fixes two things at once: they no
+// longer teleport from the right edge (expanded) to the left (collapsed),
+// and a long path can never push them off-screen — the path is the only
+// element that gives way. Both resolved and outdated render in both
+// states, so an outdated thread still reads as outdated while collapsed.
+//
+// The path:line is left-truncated to whatever width the pills (and, for
+// the collapsed view, the caller-reserved count suffix) leave, dropping
+// leading directories so the filename + line number — what you navigate
+// by — always survive.
+func (m *Model) renderThreadHeader(path string, line int, resolved, outdated, focused, expanded bool, width int) string {
+	// The active (focused) thread sits on a full-width band painted with
+	// Theme.ActiveBackground — a color dedicated to "active comment",
+	// deliberately distinct from SelectedBackground (used for selected
+	// line numbers / list rows) so the two don't read as the same thing.
+	// Each text segment carries the background explicitly so a nested ANSI
+	// reset can't punch a hole between the pills; the outer Width fill then
+	// extends the band to the right edge.
+	base := lipgloss.NewStyle()
+	sep := " "
+	if focused {
+		base = base.Background(m.ctx.Theme.ActiveBackground)
+		sep = base.Render(" ")
+	}
+
+	// State pills reuse the same themed badge treatment as the check
+	// badges (checks.go): a semantic background + inverted text. Resolved
+	// is the "pass" green; outdated is the "pending" warning amber.
+	resolvedPill := lipgloss.NewStyle().
+		Foreground(m.ctx.Theme.InvertedText).
+		Background(m.ctx.Theme.SuccessText).
+		Padding(0, 1)
+	outdatedPill := lipgloss.NewStyle().
+		Foreground(m.ctx.Theme.InvertedText).
+		Background(m.ctx.Theme.WarningText).
+		Padding(0, 1)
+
+	var parts []string
+	if resolved {
+		parts = append(parts, resolvedPill.Render("✓ resolved"), sep)
+	}
+	if outdated {
+		parts = append(parts, outdatedPill.Render("outdated"), sep)
+	}
+	pills := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+
+	// Disclosure triangle encodes body state; focus is carried by the
+	// gutter accent + bold path (+ the active band), so the marker is
+	// free to mean expanded.
+	marker := "▸ "
+	if expanded {
+		marker = "▾ "
+	}
+	headerStyle := base.Foreground(m.ctx.Theme.FaintText)
+	if focused {
+		headerStyle = base.Foreground(m.ctx.Theme.PrimaryText).Bold(true)
+	}
+
+	pathLine := fmt.Sprintf("%s:%d", path, line)
+	budget := width - lipgloss.Width(pills) - lipgloss.Width(marker)
+	if budget < 1 {
+		budget = 1
+	}
+	if lipgloss.Width(pathLine) > budget {
+		// Keep the tail (…dir/file.go:NN); drop leading directories. The
+		// ellipsis takes one column, so leave room for it in the budget.
+		pathLine = constants.Ellipsis + ansi.TruncateLeft(pathLine, lipgloss.Width(pathLine)-budget+1, "")
+	}
+
+	header := lipgloss.JoinHorizontal(lipgloss.Top, pills, headerStyle.Render(marker+pathLine))
+	if focused {
+		// Pad the band to the full width so the fill reaches the right edge.
+		header = base.Width(width).MaxHeight(1).Render(header)
+	}
+	return header
+}
+
 // renderReviewThread renders one inline-review thread as a grouped block
 // with a state-colored left gutter: a location header (path:line, plus
 // [resolved]/[outdated] tags), the colorized diff hunk above the
@@ -346,17 +436,6 @@ func (m *Model) renderReviewThread(
 	}
 	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
 
-	// State pills: resolved = green, outdated = light orange. Background
-	// fills so they read as badges, matching the diff-row treatment.
-	resolvedPill := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#0B5D1E")).
-		Background(lipgloss.Color("#C3F0CA")).
-		Padding(0, 1)
-	outdatedPill := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#8A5A00")).
-		Background(lipgloss.Color("#FFE0B2")).
-		Padding(0, 1)
-
 	// Left gutter color encodes thread state; focused wins so the
 	// selected thread reads as a brighter version of the same gutter.
 	gutterColor := m.ctx.Theme.FaintBorder
@@ -374,43 +453,28 @@ func (m *Model) renderReviewThread(
 		PaddingLeft(1)
 
 	// Collapsed summary for resolved, non-focused threads. One line →
-	// the caller's height/offset bookkeeping is unaffected.
+	// the caller's height/offset bookkeeping is unaffected. Shares the
+	// header builder with the expanded view so the two stay consistent;
+	// only the trailing comment count is collapsed-specific. The count's
+	// width is reserved up front so the path truncates around it.
 	if resolved && !focused {
 		n := len(comments)
 		noun := "comments"
 		if n == 1 {
 			noun = "comment"
 		}
-		summary := lipgloss.JoinHorizontal(lipgloss.Top,
-			resolvedPill.Render("✓ resolved"),
-			faint.Render(fmt.Sprintf("  %s:%d · %d %s", path, line, n, noun)),
-		)
+		countSuffix := fmt.Sprintf(" · %d %s", n, noun)
+		header := m.renderThreadHeader(path, line, resolved, outdated, focused, false, innerWidth-lipgloss.Width(countSuffix))
+		summary := lipgloss.JoinHorizontal(lipgloss.Top, header, faint.Render(countSuffix))
 		return gutter.Render(summary), nil
 	}
 
-	// Header: ▶ path:line  [resolved] [outdated]   (▶ marks focused).
-	// resolved/outdated render as colored pills.
-	prefix := "╭─ "
-	if focused {
-		prefix = "▶ "
-	}
-	headerStyle := faint
-	if focused {
-		headerStyle = lipgloss.NewStyle().Foreground(m.ctx.Theme.PrimaryText).Bold(true)
-	}
-	headerParts := []string{headerStyle.Render(fmt.Sprintf("%s%s:%d", prefix, path, line))}
-	if resolved {
-		headerParts = append(headerParts, " ", resolvedPill.Render("resolved"))
-	}
-	if outdated {
-		headerParts = append(headerParts, " ", outdatedPill.Render("outdated"))
-	}
-	header := lipgloss.JoinHorizontal(lipgloss.Top, headerParts...)
+	header := m.renderThreadHeader(path, line, resolved, outdated, focused, true, innerWidth)
 
 	// Diff hunk lifted from the *root* comment — every comment in the
 	// thread carries the same hunk; render it once, colorized like a
 	// real diff (background-filled rows), above the conversation.
-	hunk := colorizeDiffHunk(comments[0].DiffHunk, innerWidth)
+	hunk := colorizeDiffHunk(comments[0].DiffHunk, innerWidth, &m.ctx.Theme)
 
 	// Root comment uses the existing renderComment shape (with header
 	// trimmed because we already drew the location above). Replies use a
@@ -445,7 +509,7 @@ func (m *Model) renderReviewThread(
 	// top-of-tab action bar. Suppressed while the reply editor is open
 	// (the editor takes its place).
 	if focused && m.EditorReplyView() == "" {
-		all = append(all, m.renderThreadHints(resolved))
+		all = append(all, m.renderThreadHints(resolved, innerWidth))
 	}
 	conv := gutter.Render(lipgloss.JoinVertical(lipgloss.Left, all...))
 
