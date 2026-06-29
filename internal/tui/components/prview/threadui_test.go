@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/constants"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/markdown"
 )
 
@@ -131,6 +132,54 @@ func TestResolvedThreadCollapsesWhenNotFocused(t *testing.T) {
 	visible := stripANSI(rendered)
 	require.Contains(t, visible, "✓ resolved")
 	require.Contains(t, visible, "file.go:1")
+}
+
+// The outdated pill is left-anchored and shown in BOTH the collapsed and
+// expanded views, so a resolved+outdated thread reads as outdated either
+// way (it used to vanish while collapsed).
+func TestOutdatedPillVisibleCollapsedAndExpanded(t *testing.T) {
+	now := time.Now()
+	m := modelWithThreads(t,
+		thread("t1", 11, true, now.Add(-2*time.Minute)),
+		thread("t2", 22, false, now.Add(-1*time.Minute)),
+	)
+	m.SetWidth(80)
+	m.MoveThreadCursor(1) // keep t1 collapsed
+	nodes := m.allThreads()[0].Comments.Nodes
+
+	collapsed, err := m.renderReviewThread("file.go", 1, true /*resolved*/, true /*outdated*/, false /*focused*/, nodes)
+	require.NoError(t, err)
+	require.Contains(t, stripANSI(collapsed), "outdated")
+
+	expanded, err := m.renderReviewThread("file.go", 1, true /*resolved*/, true /*outdated*/, true /*focused*/, nodes)
+	require.NoError(t, err)
+	require.Contains(t, stripANSI(expanded), "outdated")
+}
+
+// A very long path is left-truncated (…/tail kept) so the state pills are
+// never pushed off-screen and the filename + line number survive.
+func TestLongPathTruncatesButKeepsPills(t *testing.T) {
+	now := time.Now()
+	m := modelWithThreads(t,
+		thread("t1", 11, true, now.Add(-2*time.Minute)),
+		thread("t2", 22, false, now.Add(-1*time.Minute)),
+	)
+	m.SetWidth(60)
+	m.MoveThreadCursor(1)
+	nodes := m.allThreads()[0].Comments.Nodes
+	longPath := "internal/tui/components/prview/very/deep/nested/activity.go"
+
+	collapsed, err := m.renderReviewThread(longPath, 401, true /*resolved*/, true /*outdated*/, false /*focused*/, nodes)
+	require.NoError(t, err)
+	visible := stripANSI(collapsed)
+	// Pills survive; the path is truncated from the left so the tail shows.
+	require.Contains(t, visible, "✓ resolved")
+	require.Contains(t, visible, "outdated")
+	require.Contains(t, visible, constants.Ellipsis)
+	require.Contains(t, visible, "activity.go:401")
+	require.NotContains(t, visible, "internal/tui")
+	// Still a single collapsed line.
+	require.Equal(t, 1, len(splitNonEmpty(visible)))
 }
 
 func splitNonEmpty(s string) []string {
