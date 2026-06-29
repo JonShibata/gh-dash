@@ -304,6 +304,17 @@ type ColorThemeBorder struct {
 
 type ColorThemeBackground struct {
 	Selected Color `yaml:"selected" validate:"omitempty,color"`
+	Active   Color `yaml:"active"   validate:"omitempty,color"`
+}
+
+// ColorThemeDiff colors the inline review diff card: background fills for
+// each row kind plus a uniform text color.
+type ColorThemeDiff struct {
+	Added   Color `yaml:"added"   validate:"omitempty,color"`
+	Removed Color `yaml:"removed" validate:"omitempty,color"`
+	Header  Color `yaml:"header"  validate:"omitempty,color"`
+	Context Color `yaml:"context" validate:"omitempty,color"`
+	Text    Color `yaml:"text"    validate:"omitempty,color"`
 }
 
 type ColorTheme struct {
@@ -311,6 +322,7 @@ type ColorTheme struct {
 	Text       ColorThemeText       `yaml:"text,omitempty"       validate:"required,omitempty"`
 	Background ColorThemeBackground `yaml:"background,omitempty" validate:"required,omitempty"`
 	Border     ColorThemeBorder     `yaml:"border,omitempty"     validate:"required,omitempty"`
+	Diff       ColorThemeDiff       `yaml:"diff,omitempty"       validate:"omitempty"`
 }
 
 type ColorThemeConfig struct {

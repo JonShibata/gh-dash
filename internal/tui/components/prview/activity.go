@@ -238,12 +238,12 @@ func (m *Model) renderThreadHints(resolved bool, width int) string {
 	if resolved {
 		action = "x unresolve"
 	}
-	// Sit the legend on the same selected-bg band as the active header so
+	// Sit the legend on the same active-bg band as the active header so
 	// the two bracket the active comment. SecondaryText (not FaintText) so
 	// it stays legible against the band.
 	return lipgloss.NewStyle().
 		Foreground(m.ctx.Theme.SecondaryText).
-		Background(m.ctx.Theme.SelectedBackground).
+		Background(m.ctx.Theme.ActiveBackground).
 		Width(width).
 		MaxHeight(1).
 		Render("  n/N prev/next · r reply · R reply+resolve · " + action)
@@ -338,27 +338,30 @@ func (m *Model) renderReviewHeader(review data.Review) string {
 // leading directories so the filename + line number — what you navigate
 // by — always survive.
 func (m *Model) renderThreadHeader(path string, line int, resolved, outdated, focused, expanded bool, width int) string {
-	// The active (focused) thread sits on a full-width selected-bg band so
-	// the comment reads as bounded/selected — the same color the list views
-	// use for the cursor row. Each text segment carries the background
-	// explicitly so a nested ANSI reset can't punch a hole between the
-	// pills; the outer Width fill then extends the band to the right edge.
+	// The active (focused) thread sits on a full-width band painted with
+	// Theme.ActiveBackground — a color dedicated to "active comment",
+	// deliberately distinct from SelectedBackground (used for selected
+	// line numbers / list rows) so the two don't read as the same thing.
+	// Each text segment carries the background explicitly so a nested ANSI
+	// reset can't punch a hole between the pills; the outer Width fill then
+	// extends the band to the right edge.
 	base := lipgloss.NewStyle()
 	sep := " "
 	if focused {
-		base = base.Background(m.ctx.Theme.SelectedBackground)
+		base = base.Background(m.ctx.Theme.ActiveBackground)
 		sep = base.Render(" ")
 	}
 
-	// State pills: resolved = green, outdated = light orange. Background
-	// fills so they read as badges, matching the diff-row treatment.
+	// State pills reuse the same themed badge treatment as the check
+	// badges (checks.go): a semantic background + inverted text. Resolved
+	// is the "pass" green; outdated is the "pending" warning amber.
 	resolvedPill := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#0B5D1E")).
-		Background(lipgloss.Color("#C3F0CA")).
+		Foreground(m.ctx.Theme.InvertedText).
+		Background(m.ctx.Theme.SuccessText).
 		Padding(0, 1)
 	outdatedPill := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#8A5A00")).
-		Background(lipgloss.Color("#FFE0B2")).
+		Foreground(m.ctx.Theme.InvertedText).
+		Background(m.ctx.Theme.WarningText).
 		Padding(0, 1)
 
 	var parts []string
@@ -371,7 +374,7 @@ func (m *Model) renderThreadHeader(path string, line int, resolved, outdated, fo
 	pills := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 
 	// Disclosure triangle encodes body state; focus is carried by the
-	// gutter accent + bold path (+ the selected band), so the marker is
+	// gutter accent + bold path (+ the active band), so the marker is
 	// free to mean expanded.
 	marker := "▸ "
 	if expanded {
@@ -471,7 +474,7 @@ func (m *Model) renderReviewThread(
 	// Diff hunk lifted from the *root* comment — every comment in the
 	// thread carries the same hunk; render it once, colorized like a
 	// real diff (background-filled rows), above the conversation.
-	hunk := colorizeDiffHunk(comments[0].DiffHunk, innerWidth)
+	hunk := colorizeDiffHunk(comments[0].DiffHunk, innerWidth, &m.ctx.Theme)
 
 	// Root comment uses the existing renderComment shape (with header
 	// trimmed because we already drew the location above). Replies use a

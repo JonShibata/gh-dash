@@ -25,7 +25,7 @@ func dumpRender(tag string, width int, rendered string) {
 	dump.WriteString(fmt.Sprintf("=== tag=%s width=%d ===\n", tag, width))
 	for i, line := range strings.Split(rendered, "\n") {
 		visW := lipgloss.Width(line)
-		bg := strings.Contains(line, "\x1b[48;2;234;238;242")
+		bg := strings.Contains(line, CodeBgMarker)
 		literal := strings.ReplaceAll(line, "\x1b", "\\x1b")
 		dump.WriteString(fmt.Sprintf("%3d w=%d bg=%v : %s\n", i, visW, bg, literal))
 	}

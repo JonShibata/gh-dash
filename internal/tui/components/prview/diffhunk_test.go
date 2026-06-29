@@ -7,6 +7,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
 )
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
@@ -21,8 +23,8 @@ func hasBackgroundSGR(s string) bool {
 }
 
 func TestColorizeDiffHunkEmpty(t *testing.T) {
-	require.Equal(t, "", colorizeDiffHunk("", 80))
-	require.Equal(t, "", colorizeDiffHunk("\n\n", 80))
+	require.Equal(t, "", colorizeDiffHunk("", 80, theme.DefaultTheme))
+	require.Equal(t, "", colorizeDiffHunk("\n\n", 80, theme.DefaultTheme))
 }
 
 // One output line per input line (so the caller's height/offset
@@ -31,7 +33,7 @@ func TestColorizeDiffHunkEmpty(t *testing.T) {
 func TestColorizeDiffHunkPreservesTextAndLineCount(t *testing.T) {
 	hunk := "@@ -1,3 +1,3 @@ func foo() {\n context line\n-removed\n+added\n\\ No newline at end of file"
 
-	out := colorizeDiffHunk(hunk, 80)
+	out := colorizeDiffHunk(hunk, 80, theme.DefaultTheme)
 	gotLines := strings.Split(out, "\n")
 	wantStarts := []string{
 		"@@ -1,3 +1,3 @@ func foo() {",
@@ -50,10 +52,10 @@ func TestColorizeDiffHunkPreservesTextAndLineCount(t *testing.T) {
 // Added / removed / context / header lines must each be BACKGROUND-filled
 // and route to distinct styles when the environment renders color.
 func TestColorizeDiffHunkBackgroundAndDistinctStyling(t *testing.T) {
-	add := colorizeDiffHunk("+added", 40)
-	del := colorizeDiffHunk("-removed", 40)
-	ctxLine := colorizeDiffHunk(" context", 40)
-	hdr := colorizeDiffHunk("@@ -1 +1 @@", 40)
+	add := colorizeDiffHunk("+added", 40, theme.DefaultTheme)
+	del := colorizeDiffHunk("-removed", 40, theme.DefaultTheme)
+	ctxLine := colorizeDiffHunk(" context", 40, theme.DefaultTheme)
+	hdr := colorizeDiffHunk("@@ -1 +1 @@", 40, theme.DefaultTheme)
 
 	if strings.Contains(add+del+ctxLine+hdr, "\x1b") {
 		require.True(t, hasBackgroundSGR(add), "added line should be background-filled")
@@ -67,6 +69,6 @@ func TestColorizeDiffHunkBackgroundAndDistinctStyling(t *testing.T) {
 
 // Each row is padded with its background out to the requested width.
 func TestColorizeDiffHunkFillsWidth(t *testing.T) {
-	out := colorizeDiffHunk("+x", 20)
+	out := colorizeDiffHunk("+x", 20, theme.DefaultTheme)
 	require.Equal(t, 20, lipgloss.Width(stripANSI(out)))
 }
