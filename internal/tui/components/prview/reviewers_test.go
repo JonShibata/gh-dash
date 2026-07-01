@@ -210,6 +210,24 @@ func TestRenderRequestedReviewers(t *testing.T) {
 			},
 			wantContains: []string{"Reviewers", "@charlie", constants.CommentIcon},
 		},
+		"reviewer whose review was dismissed is still listed": {
+			// latestReviews reports the author's most recent review; when
+			// that is DISMISSED (e.g. dismissed after a new push) the author
+			// still reviewed and must appear.
+			reviewRequests: []data.ReviewRequestNode{},
+			reviews: []data.Review{
+				{Author: struct{ Login string }{Login: "dana"}, State: "DISMISSED"},
+			},
+			wantContains: []string{"Reviewers", "@dana", constants.CommentIcon},
+		},
+		"reviewer with only a pending draft is not listed": {
+			reviewRequests: []data.ReviewRequestNode{},
+			reviews: []data.Review{
+				{Author: struct{ Login string }{Login: "erin"}, State: "PENDING"},
+			},
+			wantContains:   []string{},
+			wantNotContain: []string{"@erin"},
+		},
 		"reviewer who approved then commented": {
 			// latestReviews shows the comment (most recent); the approval
 			// comes from latestOpinionatedReviews and must win.

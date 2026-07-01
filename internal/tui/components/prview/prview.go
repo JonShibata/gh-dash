@@ -507,7 +507,13 @@ func (m *Model) renderRequestedReviewers() string {
 		if shownReviewers[login] {
 			continue
 		}
-		if state != "APPROVED" && state != "CHANGES_REQUESTED" && state != "COMMENTED" {
+		// Only skip states that aren't a submitted review: "" (none) and
+		// PENDING (an unsubmitted draft). Everything else is real
+		// participation and must be listed — notably DISMISSED, a review
+		// later dismissed (e.g. by a new push), whose author still reviewed
+		// and often left comments. Filtering it out was why reviewers who
+		// commented went missing.
+		if state == "" || state == "PENDING" {
 			continue
 		}
 		shownReviewers[login] = true
@@ -518,7 +524,7 @@ func (m *Model) renderRequestedReviewers() string {
 			stateIcon = successStyle.Render(constants.ApprovedIcon)
 		case "CHANGES_REQUESTED":
 			stateIcon = errorStyle.Render(constants.ChangesRequestedIcon)
-		case "COMMENTED":
+		default: // COMMENTED, DISMISSED, or any other submitted state
 			stateIcon = m.ctx.Styles.Common.CommentGlyph
 		}
 		reviewerStr := stateIcon + " " + reviewerStyle.Render("@"+login)
