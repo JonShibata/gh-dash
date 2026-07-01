@@ -432,7 +432,11 @@ func (m *Model) renderRequestedReviewers() string {
 	}
 
 	reviewRequests := m.pr.Data.Enriched.ReviewRequests.Nodes
-	reviews := m.pr.Data.Enriched.Reviews.Nodes
+	// latestReviews is one node per author (so no reviewer is truncated out
+	// of the fetch window by a chatty peer); latestOpinionatedReviews is the
+	// latest APPROVED/CHANGES_REQUESTED per author. See EnrichedPullRequestData.
+	reviews := m.pr.Data.Enriched.LatestReviews.Nodes
+	opinionatedReviews := m.pr.Data.Enriched.LatestOpinionatedReviews.Nodes
 	suggestedReviewers := m.pr.Data.Enriched.SuggestedReviewers
 
 	if len(reviewRequests) == 0 && len(reviews) == 0 && len(suggestedReviewers) == 0 {
@@ -441,14 +445,12 @@ func (m *Model) renderRequestedReviewers() string {
 
 	reviewStates := make(map[string]string)
 	for _, review := range reviews {
-		login := review.Author.Login
-		existingState := reviewStates[login]
-		// Don't override APPROVED or CHANGES_REQUESTED with COMMENTED
-		if review.State == "COMMENTED" &&
-			(existingState == "APPROVED" || existingState == "CHANGES_REQUESTED") {
-			continue
-		}
-		reviewStates[login] = review.State
+		reviewStates[review.Author.Login] = review.State
+	}
+	// Opinionated reviews win: an APPROVED/CHANGES_REQUESTED must not be
+	// masked by a later COMMENTED review from the same author.
+	for _, review := range opinionatedReviews {
+		reviewStates[review.Author.Login] = review.State
 	}
 
 	reviewerItems := make([]reviewerItem, 0)

@@ -67,9 +67,22 @@ type EnrichedPullRequestData struct {
 	// practice; the over-fetch was wasteful on every enrichment.
 	ReviewRequests ReviewRequests `graphql:"reviewRequests(last: 20)"`
 	// Trimmed from last:100. Reviews tab shows recent reviews; 30 is
-	// plenty for nearly all PRs.
-	Reviews            Reviews `graphql:"reviews(last: 30)"`
-	SuggestedReviewers []SuggestedReviewer
+	// plenty for nearly all PRs. Also feeds the unread-review notification
+	// count, which wants the raw event stream — so this stays reviews(...),
+	// not the deduped latest* connections below.
+	Reviews Reviews `graphql:"reviews(last: 30)"`
+	// The reviewers section uses these instead of Reviews. reviews(last: N)
+	// returns individual review *events*, so a single chatty reviewer's many
+	// events can fill the window and truncate distinct reviewers out of it.
+	// latestReviews collapses to one node per author (catching every
+	// reviewer, incl. comment-only ones); latestOpinionatedReviews gives the
+	// latest APPROVED/CHANGES_REQUESTED per author so an approval isn't
+	// masked by a later comment. Together they match GitHub's own reviewers
+	// sidebar. first:100 is GitHub's max page size — one node per author, so
+	// effectively unbounded in practice.
+	LatestReviews            Reviews `graphql:"latestReviews(first: 100)"`
+	LatestOpinionatedReviews Reviews `graphql:"latestOpinionatedReviews(first: 100)"`
+	SuggestedReviewers       []SuggestedReviewer
 	// first:100 is GitHub's max page size. This is the on-demand per-PR
 	// enrichment query (not the per-tick list query below), so fetching the
 	// full file list here is cheap. The Files tab reads from here once the PR

@@ -44,7 +44,9 @@ func newTestModelWithWidth(t *testing.T, prData *data.PullRequestData, width int
 			IsEnriched: true,
 			Enriched: data.EnrichedPullRequestData{
 				ReviewRequests: prData.ReviewRequests,
-				Reviews:        prData.Reviews,
+				// The reviewers section reads LatestReviews (one node per
+				// author), not Reviews. Tests feed their review set here.
+				LatestReviews: prData.Reviews,
 			},
 		},
 	}
@@ -57,7 +59,11 @@ func newTestModelWithWidth(t *testing.T, prData *data.PullRequestData, width int
 func TestRenderRequestedReviewers(t *testing.T) {
 	testCases := map[string]struct {
 		reviewRequests []data.ReviewRequestNode
+		// reviews maps to latestReviews (one node per author); opinionated
+		// maps to latestOpinionatedReviews (latest APPROVED/CHANGES_REQUESTED
+		// per author), which takes precedence when both are present.
 		reviews        []data.Review
+		opinionated    []data.Review
 		wantContains   []string
 		wantNotContain []string
 	}{
@@ -205,10 +211,14 @@ func TestRenderRequestedReviewers(t *testing.T) {
 			wantContains: []string{"Reviewers", "@charlie", constants.CommentIcon},
 		},
 		"reviewer who approved then commented": {
+			// latestReviews shows the comment (most recent); the approval
+			// comes from latestOpinionatedReviews and must win.
 			reviewRequests: []data.ReviewRequestNode{},
 			reviews: []data.Review{
-				{Author: struct{ Login string }{Login: "alice"}, State: "APPROVED"},
 				{Author: struct{ Login string }{Login: "alice"}, State: "COMMENTED"},
+			},
+			opinionated: []data.Review{
+				{Author: struct{ Login string }{Login: "alice"}, State: "APPROVED"},
 			},
 			wantContains:   []string{"Reviewers", "@alice", constants.ApprovedIcon},
 			wantNotContain: []string{constants.CommentIcon},
@@ -216,8 +226,10 @@ func TestRenderRequestedReviewers(t *testing.T) {
 		"reviewer who requested changes then commented": {
 			reviewRequests: []data.ReviewRequestNode{},
 			reviews: []data.Review{
-				{Author: struct{ Login string }{Login: "bob"}, State: "CHANGES_REQUESTED"},
 				{Author: struct{ Login string }{Login: "bob"}, State: "COMMENTED"},
+			},
+			opinionated: []data.Review{
+				{Author: struct{ Login string }{Login: "bob"}, State: "CHANGES_REQUESTED"},
 			},
 			wantContains:   []string{"Reviewers", "@bob", constants.ChangesRequestedIcon},
 			wantNotContain: []string{constants.CommentIcon},
@@ -261,6 +273,10 @@ func TestRenderRequestedReviewers(t *testing.T) {
 			}
 
 			m := newTestModel(t, prData)
+			m.pr.Data.Enriched.LatestOpinionatedReviews = data.Reviews{
+				TotalCount: len(tc.opinionated),
+				Nodes:      tc.opinionated,
+			}
 			got := ansi.Strip(m.renderRequestedReviewers())
 
 			if len(tc.wantContains) == 0 {
