@@ -69,15 +69,15 @@ type Model struct {
 	// rendered block (including the inline reply input when reply
 	// mode is on). Used to bottom-align the input in the viewport.
 	threadLineEnds map[string]int
-	// replyViewportHeight is the height (in lines) of the sidebar
-	// viewport at the moment reply mode opened. Used by renderActivity
-	// to pad above the focused thread so its end lands at the viewport
-	// bottom even when the thread is near the document top (otherwise
-	// the input would render in the upper portion of the screen with
-	// blank space below it, since YOffset can't go negative).
-	// Set by SetReplyViewportHeight before syncSidebar in
-	// openSidebarForReply; ignored when reply mode is off.
-	replyViewportHeight int
+	// viewportHeight is the current sidebar viewport content height (in
+	// lines), refreshed by the parent on every syncSidebar. renderActivity
+	// uses it two ways: (1) in reply mode it pads ABOVE the focused thread so
+	// its end lands at the viewport bottom even near the document top
+	// (YOffset can't go negative); (2) it pads BELOW the last thread so n/N
+	// can anchor every thread at the same top row instead of the viewport
+	// clamping the final threads mid-screen. Zero before the first sync, in
+	// which case both paddings no-op.
+	viewportHeight int
 	// imageHints is the ordered list of (label, url) pairs for every
 	// image embedded in the current PR's bodies. Rebuilt on PR change
 	// and on every enrich payload swap so auto-refresh ticks pick up
@@ -1356,12 +1356,12 @@ func (m *Model) FocusedThreadLineOffset() int {
 	return m.threadLineOffsets[t.Id]
 }
 
-// SetReplyViewportHeight stashes the sidebar viewport's content height
-// so renderActivity can pad above the focused thread to bottom-align
-// the reply input. Called by the parent in openSidebarForReply just
-// before syncSidebar.
-func (m *Model) SetReplyViewportHeight(h int) {
-	m.replyViewportHeight = h
+// SetViewportHeight records the sidebar viewport's content height so
+// renderActivity can size its above/below padding: the reply bottom-align
+// and the n/N top-anchor. Called by the parent from syncSidebar before
+// every render (and from openSidebarForReply).
+func (m *Model) SetViewportHeight(h int) {
+	m.viewportHeight = h
 }
 
 // FocusedThreadEndLine returns the line just past the focused thread

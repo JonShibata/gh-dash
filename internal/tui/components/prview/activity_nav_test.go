@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
@@ -97,4 +98,69 @@ func TestThreadCursorDirectionFollowsRenderOrder(t *testing.T) {
 		require.Greater(t, offsets[i], offsets[i-1],
 			"pressing n (next review thread) should move the cursor DOWN the page")
 	}
+}
+
+// With the bottom scroll-padding in place, the LAST review thread can be
+// scrolled to the same top-anchor row as every other thread. This pins the
+// fix for the old behavior where the viewport clamped YOffset at the
+// document end (maxYOffset = totalLines - height), so the final threads
+// landed progressively lower — "n/N jumps to top, then middle, then bottom".
+func TestLastThreadReachesTopAnchor(t *testing.T) {
+	markdown.InitializeMarkdownStyle(true)
+	m := newTestModelForAction(t)
+	m.width = 120
+
+	mkThread := func(id, path string, updated time.Time) data.ReviewThread {
+		return data.ReviewThread{
+			Id:   id,
+			Path: path,
+			Line: 10,
+			Comments: data.ReviewComments{Nodes: []data.ReviewComment{{
+				Author:    struct{ Login string }{Login: "octocat"},
+				Body:      "comment on " + path,
+				UpdatedAt: updated,
+			}}},
+		}
+	}
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	enriched := data.EnrichedPullRequestData{}
+	for i := 0; i < 6; i++ {
+		enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
+			mkThread(
+				"T"+string(rune('1'+i)),
+				string(rune('a'+i))+"_thread.go",
+				base.Add(time.Duration(i)*time.Hour),
+			),
+		)
+	}
+	m.pr.Data.Enriched = enriched
+	m.pr.Data.IsEnriched = true
+
+	threads := m.allThreads()
+	require.NotEmpty(t, threads)
+	m.threadCursorIdx = len(threads) - 1 // focus the bottom-most thread
+
+	// A viewport shorter than the whole conversation, so the last thread
+	// starts below maxYOffset unless we pad the bottom.
+	const vpH = 12
+	m.viewportHeight = vpH
+
+	body := m.renderActivity()
+	total := lipgloss.Height(m.viewHeader()) + lipgloss.Height(body)
+	maxYOffset := total - vpH
+
+	// n/N scrolls to the thread's start offset; with the bottom padding it
+	// must be reachable (<= maxYOffset) so the header lands at the top row
+	// rather than the viewport clamping it mid-screen.
+	require.LessOrEqual(t, m.FocusedThreadLineOffset(), maxYOffset,
+		"last thread's header must reach the top row (no clamp) thanks to bottom scroll-padding")
+
+	// Precondition: without the padding the same target WOULD clamp — the
+	// last thread's start really is past the unpadded body's maxYOffset.
+	m.viewportHeight = 0 // disables both paddings in renderActivity
+	unpadded := m.renderActivity()
+	unpaddedMax := lipgloss.Height(m.viewHeader()) + lipgloss.Height(unpadded) - vpH
+	require.Greater(t, m.FocusedThreadLineOffset(), unpaddedMax,
+		"precondition: last thread would clamp without bottom scroll-padding")
 }

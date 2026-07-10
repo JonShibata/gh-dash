@@ -165,19 +165,21 @@ func (m *Model) renderActivity() string {
 			}
 		}
 		var renderedActivities []string
+		maxThreadOffset := -1 // start offset of the last (bottom-most) thread
 		for _, activity := range activities {
 			rendered := activity.RenderedString
 			padBefore := 0
-			if focusedId != "" && activity.ThreadId == focusedId && m.replyViewportHeight > 0 {
+			if focusedId != "" && activity.ThreadId == focusedId && m.viewportHeight > 0 {
 				naturalEnd := cum + lipgloss.Height(rendered)
-				if naturalEnd < m.replyViewportHeight {
-					padBefore = m.replyViewportHeight - naturalEnd
+				if naturalEnd < m.viewportHeight {
+					padBefore = m.viewportHeight - naturalEnd
 					rendered = strings.Repeat("\n", padBefore) + rendered
 				}
 			}
 			cum += padBefore
 			if activity.ThreadId != "" {
 				m.threadLineOffsets[activity.ThreadId] = cum
+				maxThreadOffset = cum // threads render top-to-bottom, so this ends on the last one
 			}
 			renderedActivities = append(renderedActivities, rendered)
 			cum += lipgloss.Height(activity.RenderedString)
@@ -186,6 +188,21 @@ func (m *Model) renderActivity() string {
 			}
 		}
 		body = lipgloss.JoinVertical(lipgloss.Left, renderedActivities...)
+		// Bottom scroll-padding (the n/N top-anchor): reserve enough trailing
+		// blank lines that the LAST review thread can still scroll up to the
+		// top row of the frame. Without it the viewport clamps YOffset at
+		// maxYOffset = totalLines - height near the document end, so the
+		// final threads land progressively lower — the "n/N jumps to top,
+		// then middle, then bottom" this removes. Only threads are n/N
+		// targets, so pad relative to the last thread's start, not the last
+		// activity. cum is the full content height (viewHeader + title +
+		// activities) at this point.
+		if maxThreadOffset >= 0 && m.viewportHeight > 0 {
+			linesBelowLastThread := cum - maxThreadOffset
+			if pad := m.viewportHeight - linesBelowLastThread; pad > 0 {
+				body += strings.Repeat("\n", pad)
+			}
+		}
 		body = lipgloss.JoinVertical(lipgloss.Left, title, body)
 	}
 

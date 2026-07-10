@@ -300,9 +300,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case onActivity && key.Matches(msg, keys.PRKeys.NextReviewThread):
 				// n → move thread cursor forward and scroll the focused
-				// thread to the top of the viewport. Re-syncs sidebar
-				// content first so the line offsets reflect the new
-				// cursor highlight, then applies the scroll.
+				// thread's header to the top row of the frame. Re-syncs
+				// sidebar content first so the line offsets (and the bottom
+				// scroll-pad) reflect the new cursor, then applies the
+				// scroll. The pad lets even the last threads reach the top
+				// row instead of clamping mid-screen.
 				m.prView.MoveThreadCursor(1)
 				m.syncSidebar()
 				m.sidebar.ScrollToLine(m.prView.FocusedThreadLineOffset())
@@ -1552,7 +1554,7 @@ func (m *Model) openSidebarForReply(setFunc func(bool) tea.Cmd) tea.Cmd {
 	cmd := setFunc(true)
 	m.syncMainContentDimensions()
 	vpH := m.sidebar.ViewportHeight()
-	m.prView.SetReplyViewportHeight(vpH)
+	m.prView.SetViewportHeight(vpH)
 	m.syncSidebar()
 	end := m.prView.FocusedThreadEndLine()
 	target := end - vpH
@@ -1604,6 +1606,9 @@ func (m *Model) syncSidebar() tea.Cmd {
 		m.prView.SetSectionId(m.currSectionId)
 		m.prView.SetRow(row)
 		m.prView.SetWidth(width)
+		// Feed the current viewport height in before rendering so the
+		// Activity tab's bottom scroll-pad (n/N top-anchor) is sized right.
+		m.prView.SetViewportHeight(m.sidebar.ViewportHeight())
 		m.sidebar.SetContent(m.prView.View())
 		// Scroll to bottom if in input mode to keep inputbox visible —
 		// EXCEPT for reply-review mode, where the input renders inline
