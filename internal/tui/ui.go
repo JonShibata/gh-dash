@@ -453,18 +453,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
 				}
 			}
+			// `r` doubles as "reset everything": force a full repaint so any
+			// ghost/misaligned cells left by the frame-diff renderer are wiped.
+			cmds = append(cmds, tea.ClearScreen)
 
 		case key.Matches(msg, m.keys.RefreshAll):
 			data.ClearEnrichmentCache()
 			newSections, fetchSectionsCmds := m.fetchAllViewSections()
 			m.setCurrentViewSections(newSections)
 			cmds = append(cmds, fetchSectionsCmds)
+			cmds = append(cmds, tea.ClearScreen)
 
 		case key.Matches(msg, m.keys.Redraw):
-		// TODO: this doesn't exist in bubbletea v2
-		// can't find a way to just ask to send bubbletea's internal repaintMsg{},
-		// so this seems like the lightest-weight alternative
-		// return m, tea.Batch(tea.ExitAltScreen, tea.EnterAltScreen)
+			// bubbletea v2's full-repaint trigger: clearScreen() marks the
+			// ultraviolet screen for a full redraw, resyncing its cell model
+			// with the terminal (resolves the old "no repaintMsg in v2" TODO).
+			cmds = append(cmds, tea.ClearScreen)
 
 		case key.Matches(msg, m.keys.Search):
 			if currSection != nil {

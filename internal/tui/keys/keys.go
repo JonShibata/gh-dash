@@ -212,11 +212,11 @@ var Keys = &KeyMap{
 	),
 	Refresh: key.NewBinding(
 		key.WithKeys("r"),
-		key.WithHelp("r", "refresh"),
+		key.WithHelp("r", "refresh & redraw"),
 	),
 	RefreshAll: key.NewBinding(
 		key.WithKeys("R"),
-		key.WithHelp("R", "refresh all"),
+		key.WithHelp("R", "refresh all & redraw"),
 	),
 	PageDown: key.NewBinding(
 		key.WithKeys("ctrl+d"),
