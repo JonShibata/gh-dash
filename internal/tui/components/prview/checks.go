@@ -389,31 +389,70 @@ func (m *Model) renderCheckBadge(category CheckCategory) string {
 	}
 }
 
+// categoryFromState maps an authoritative GitHub check state — a StatusContext
+// state, or a CheckRun's status-when-waiting-else-conclusion — to a
+// CheckCategory. Single source of truth for renderCheckRunConclusion,
+// renderStatusContextConclusion, and authoritativeCheckCategories.
+func categoryFromState(state string) CheckCategory {
+	switch {
+	case ghchecks.IsStatusWaiting(state):
+		return CheckWaiting
+	case ghchecks.IsConclusionAFailure(state):
+		return CheckFailure
+	default:
+		return CheckSuccess
+	}
+}
+
+// authoritativeCheckCategories returns each check context's category as GitHub
+// itself reports it (StatusContext state, or CheckRun status/conclusion),
+// keyed by check name, for the PR's last commit.
+//
+// It reconciles FI Tests sub-jobs: gha_fi_test_manager posts a StatusContext
+// per sub-job carrying the real pending/success/failure state, but the "FI
+// Tests" markdown summary we expand only reflects each sub-job's latest
+// *attempt*. A sub-job being retried reads "❌ failure" in the table while its
+// context is still PENDING (and the parent "FI Tests" check is IN_PROGRESS) —
+// which is exactly what GitHub shows. Preferring the context state keeps our
+// expanded rows aligned with GitHub's rollup.
+func (m *Model) authoritativeCheckCategories() map[string]CheckCategory {
+	cats := make(map[string]CheckCategory)
+	commits := m.pr.Data.Enriched.Commits.Nodes
+	if len(commits) == 0 {
+		return cats
+	}
+	for _, node := range commits[0].Commit.StatusCheckRollup.Contexts.Nodes {
+		switch node.Typename {
+		case "CheckRun":
+			cr := node.CheckRun
+			state := string(cr.Conclusion)
+			if ghchecks.IsStatusWaiting(string(cr.Status)) {
+				state = string(cr.Status)
+			}
+			cats[string(cr.Name)] = categoryFromState(state)
+		case "StatusContext":
+			cats[string(node.StatusContext.Context)] = categoryFromState(
+				string(node.StatusContext.State),
+			)
+		}
+	}
+	return cats
+}
+
 func (m *Model) renderCheckRunConclusion(checkRun data.CheckRun) (CheckCategory, string) {
+	state := string(checkRun.Conclusion)
 	if ghchecks.IsStatusWaiting(string(checkRun.Status)) {
-		return CheckWaiting, m.renderCheckBadge(CheckWaiting)
+		state = string(checkRun.Status)
 	}
-
-	if ghchecks.IsConclusionAFailure(string(checkRun.Conclusion)) {
-		return CheckFailure, m.renderCheckBadge(CheckFailure)
-	}
-
-	return CheckSuccess, m.renderCheckBadge(CheckSuccess)
+	category := categoryFromState(state)
+	return category, m.renderCheckBadge(category)
 }
 
 func (m *Model) renderStatusContextConclusion(
 	statusContext data.StatusContext,
 ) (CheckCategory, string) {
-	conclusionStr := string(statusContext.State)
-	if ghchecks.IsStatusWaiting(conclusionStr) {
-		return CheckWaiting, m.renderCheckBadge(CheckWaiting)
-	}
-
-	if ghchecks.IsConclusionAFailure(conclusionStr) {
-		return CheckFailure, m.renderCheckBadge(CheckFailure)
-	}
-
-	return CheckSuccess, m.renderCheckBadge(CheckSuccess)
+	category := categoryFromState(string(statusContext.State))
+	return category, m.renderCheckBadge(category)
 }
 
 func renderStatusContextName(statusContext data.StatusContext) string {
@@ -454,6 +493,10 @@ func (sidebar *Model) renderChecks() string {
 	pending := make([]string, 0)
 
 	lastCommit := commits[0]
+
+	// Per-check authoritative states from GitHub's rollup, used to reconcile
+	// expanded FI Tests sub-jobs against what GitHub actually reports.
+	authStates := sidebar.authoritativeCheckCategories()
 
 	// Collect check suites that don't appear in statusCheckRollup
 	for _, suite := range lastCommit.Commit.CheckSuites.Nodes {
@@ -510,7 +553,7 @@ func (sidebar *Model) renderChecks() string {
 		if node.Typename != "CheckRun" {
 			continue
 		}
-		if subJobs, _ := parseFITests(node.CheckRun); len(subJobs) > 0 {
+		if subJobs, _ := parseFITests(node.CheckRun, authStates); len(subJobs) > 0 {
 			for _, j := range subJobs {
 				fiSubJobNames[j.Name] = true
 			}
@@ -531,7 +574,7 @@ func (sidebar *Model) renderChecks() string {
 			// failures without leaving gh-dash. Falls through to normal
 			// rendering when the summary is empty / the parser yields
 			// nothing.
-			if subJobs, _ := parseFITests(checkRun); len(subJobs) > 0 {
+			if subJobs, _ := parseFITests(checkRun, authStates); len(subJobs) > 0 {
 				for _, j := range subJobs {
 					row := sidebar.renderFISubJobRow(j)
 					reportedChecks[j.Name] = true
@@ -728,6 +771,7 @@ func (m *Model) getChecksStats() checksStats {
 	// and StatusContext form — exactly what Jenkins does for FI sub-jobs,
 	// which led to "2 failing" when only 1 had failed.
 	nodes := lastCommit.Commit.StatusCheckRollup.Contexts.Nodes
+	authStates := m.authoritativeCheckCategories()
 
 	// Pre-pass: identify FI sub-jobs (mirrors the renderer's fiSubJobNames
 	// set). Their parent "FI Tests" CheckRun is dropped from counts since
@@ -737,7 +781,7 @@ func (m *Model) getChecksStats() checksStats {
 		if node.Typename != "CheckRun" {
 			continue
 		}
-		if subJobs, _ := parseFITests(node.CheckRun); len(subJobs) > 0 {
+		if subJobs, _ := parseFITests(node.CheckRun, authStates); len(subJobs) > 0 {
 			for _, j := range subJobs {
 				fiSubJobNames[j.Name] = true
 				switch j.Category {

@@ -38,7 +38,17 @@ type fiSubJob struct {
 // parseFITests pulls per-job rows out of the FI Tests check-run's
 // markdown summary. Returns nil for non-FI checks or when the summary is
 // empty — caller falls through to rendering the single FI Tests row.
-func parseFITests(checkRun data.CheckRun) (jobs []fiSubJob, progress string) {
+//
+// authStates maps a check name to the category GitHub itself reports for it
+// (see authoritativeCheckCategories). When a sub-job appears there, that
+// state wins over the markdown table's status cell: the table reflects each
+// sub-job's latest *attempt*, so a job being retried reads "❌ failure" there
+// while its StatusContext is still PENDING — exactly the case GitHub renders
+// as pending, not failed.
+func parseFITests(
+	checkRun data.CheckRun,
+	authStates map[string]CheckCategory,
+) (jobs []fiSubJob, progress string) {
 	if string(checkRun.Name) != fiTestCheckName {
 		return nil, ""
 	}
@@ -57,10 +67,14 @@ func parseFITests(checkRun data.CheckRun) (jobs []fiSubJob, progress string) {
 			continue
 		}
 		name, url, status, duration, tests := m[1], m[2], m[3], m[4], m[5]
+		category := classifyFIStatus(status)
+		if c, ok := authStates[name]; ok {
+			category = c
+		}
 		jobs = append(jobs, fiSubJob{
 			Name:     name,
 			URL:      url,
-			Category: classifyFIStatus(status),
+			Category: category,
 			Duration: strings.TrimSpace(duration),
 			Tests:    strings.TrimSpace(tests),
 		})
