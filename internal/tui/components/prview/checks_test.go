@@ -19,6 +19,7 @@ import (
 type checksTestOptions struct {
 	checkSuites          data.CheckSuites
 	checkRuns            []data.CheckRun
+	statusContexts       []data.StatusContext
 	rollupState          string
 	requiredStatusChecks []string
 }
@@ -139,6 +140,23 @@ func newTestModelForChecks(t *testing.T, opts checksTestOptions) Model {
 		)
 	}
 
+	// Append any StatusContext nodes (legacy commit statuses, e.g. the
+	// per-sub-job states gha_fi_test_manager reports alongside FI Tests).
+	for _, sc := range opts.statusContexts {
+		contextNode := struct {
+			Typename      graphql.String     `graphql:"__typename"`
+			CheckRun      data.CheckRun      `graphql:"... on CheckRun"`
+			StatusContext data.StatusContext `graphql:"... on StatusContext"`
+		}{
+			Typename:      "StatusContext",
+			StatusContext: sc,
+		}
+		enriched.Commits.Nodes[0].Commit.StatusCheckRollup.Contexts.Nodes = append(
+			enriched.Commits.Nodes[0].Commit.StatusCheckRollup.Contexts.Nodes,
+			contextNode,
+		)
+	}
+
 	m := NewModel(ctx)
 	m.ctx = ctx
 	m.width = 80
@@ -162,6 +180,23 @@ func makeCheckRun(name string, status string, conclusion checks.CheckRunState) d
 		Name:       graphql.String(name),
 		Status:     graphql.String(status),
 		Conclusion: conclusion,
+	}
+}
+
+func makeStatusContext(context string, state string) data.StatusContext {
+	return data.StatusContext{
+		Context: graphql.String(context),
+		State:   graphql.String(state),
+	}
+}
+
+// makeFITestsCheckRun builds the aggregate "FI Tests" check-run whose markdown
+// summary gh-dash expands into per-sub-job rows.
+func makeFITestsCheckRun(status string, summary string) data.CheckRun {
+	return data.CheckRun{
+		Name:    graphql.String(fiTestCheckName),
+		Status:  graphql.String(status),
+		Summary: graphql.String(summary),
 	}
 }
 
@@ -515,6 +550,63 @@ func TestGetChecksStats_Mixed(t *testing.T) {
 	// 1 from IN_PROGRESS check run + 1 from QUEUED check suite
 	require.Equal(t, 2, stats.inProgress,
 		"expected 2 in progress, got: %d", stats.inProgress)
+}
+
+// fiSummary is an "FI Tests" markdown summary whose Cube_API_FI_Tests row is
+// stamped "❌ failure" (its first attempt failed 14/1614 tests) while Auth is
+// green. On GitHub the job is being retried, so its StatusContext is PENDING —
+// the exact #57819 case where gh-dash showed FAIL for a still-running job.
+const fiSummary = "### Job Status\n" +
+	"| Job | Status | Duration | Tests | Allure |\n" +
+	"|-----|--------|----------|-------|--------|\n" +
+	"| [Auth_FI_Tests](https://jenkins/Auth/1) | ✅ success | 6m 0s | 48/48 (100%) | 📊 |\n" +
+	"| [Cube_API_FI_Tests](https://jenkins/Cube/84694) | ❌ failure | 39m 44s | 1600/1614 (99%) | 📊 |\n"
+
+func TestRenderChecks_FITests_RetryingSubJobPrefersGitHubState(t *testing.T) {
+	// The authoritative StatusContext (Cube_API_FI_Tests = PENDING) must win
+	// over the markdown table's "❌ failure", matching GitHub's pending view.
+	opts := checksTestOptions{
+		checkRuns: []data.CheckRun{
+			makeFITestsCheckRun("IN_PROGRESS", fiSummary),
+		},
+		statusContexts: []data.StatusContext{
+			makeStatusContext("Auth_FI_Tests", "SUCCESS"),
+			makeStatusContext("Cube_API_FI_Tests", "PENDING"),
+		},
+		rollupState: "PENDING",
+	}
+
+	m := newTestModelForChecks(t, opts)
+
+	got := m.renderChecks()
+	require.Contains(t, got, "Cube_API_FI_Tests",
+		"expected the Cube_API_FI_Tests row, got: %q", got)
+	require.Contains(t, got, "PEND",
+		"expected a PEND badge for the retrying sub-job, got: %q", got)
+	require.NotContains(t, got, "FAIL",
+		"a sub-job still PENDING on GitHub must not render as FAIL, got: %q", got)
+
+	stats := m.getChecksStats()
+	require.Equal(t, 0, stats.failed, "retrying sub-job must not count as failed")
+	require.Equal(t, 1, stats.inProgress, "Cube_API_FI_Tests should count as in progress")
+	require.Equal(t, 1, stats.succeeded, "Auth_FI_Tests should count as succeeded")
+}
+
+func TestGetChecksStats_FITests_FallsBackToTableWithoutContext(t *testing.T) {
+	// With no matching StatusContext, the markdown table's "❌ failure" is the
+	// only signal — the sub-job must still be counted as failed.
+	opts := checksTestOptions{
+		checkRuns: []data.CheckRun{
+			makeFITestsCheckRun("IN_PROGRESS", fiSummary),
+		},
+		rollupState: "FAILURE",
+	}
+
+	m := newTestModelForChecks(t, opts)
+	stats := m.getChecksStats()
+	require.Equal(t, 1, stats.failed,
+		"Cube_API_FI_Tests should fall back to the table's failure state")
+	require.Equal(t, 1, stats.succeeded, "Auth_FI_Tests should still be counted successful")
 }
 
 func TestViewChecksBar_NarrowWidth_NoPanic(t *testing.T) {
