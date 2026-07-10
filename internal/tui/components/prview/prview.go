@@ -771,8 +771,14 @@ func (m *Model) RefreshEnrichedCurrRow() tea.Cmd {
 
 func (m *Model) SetWidth(width int) {
 	m.width = width
-	m.carousel.SetWidth(width)
-	m.editor.SetWidth(width)
+	m.carousel.SetWidth(width) // header carousel is NOT padded — keep full width
+	// The editor renders inside the body's content padding (both sides) AND
+	// inside the bordered InputBox, so its textarea must be narrowed by both
+	// or its right edge is clipped by the sidebar's MaxWidth (invisible text).
+	editorWidth := width -
+		m.ctx.Styles.Sidebar.ContentPadding*2 -
+		m.ctx.Styles.Sidebar.InputBox.GetHorizontalFrameSize()
+	m.editor.SetWidth(max(1, editorWidth))
 }
 
 func (m *Model) IsTextInputBoxFocused() bool {

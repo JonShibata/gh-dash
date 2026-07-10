@@ -1008,8 +1008,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				log.Error("image viewer failed", "err", err)
 			}
-			return nil
+			return imageViewerClosedMsg{}
 		}))
+
+	case imageViewerClosedMsg:
+		// kitten icat places the image via the Kitty graphics protocol,
+		// which lives outside the text-cell grid — a normal repaint (and
+		// even ClearScreen) leaves it on screen. Delete all image
+		// placements, then force a full repaint of the cells icat disturbed.
+		cmds = append(cmds,
+			tea.Raw("\x1b_Ga=d,d=A\x1b\\"),
+			tea.ClearScreen,
+		)
 
 	case notificationPRFetchedMsg:
 		if msg.Err == nil {
@@ -1264,7 +1274,18 @@ func (m Model) View() tea.View {
 		s.WriteString(m.footer.View())
 	}
 
+	// Opaque full-screen backing layer painted under everything. The
+	// frame-diff renderer only clears cells it repaints; when a frame is
+	// shorter/narrower than the previous one (content height varies during
+	// navigation), stale cells survive — the ghost tab/separator rows and
+	// duplicated footer. A ScreenWidth×ScreenHeight base guarantees every
+	// cell is written each frame, flicker-free (unlike per-key ClearScreen).
+	base := lipgloss.NewStyle().
+		Width(m.ctx.ScreenWidth).
+		Height(m.ctx.ScreenHeight).
+		Render("")
 	layers := []*lipgloss.Layer{
+		lipgloss.NewLayer(base),
 		lipgloss.NewLayer(zone.Scan(s.String())),
 	}
 
@@ -1298,6 +1319,10 @@ type initMsg struct {
 	Config  config.Config
 	RepoUrl string
 }
+
+// imageViewerClosedMsg is emitted after the external image viewer (kitten
+// icat) exits, so Update can wipe any leftover Kitty graphics and repaint.
+type imageViewerClosedMsg struct{}
 
 // Message types for notification subject fetching
 type notificationPRFetchedMsg struct {
