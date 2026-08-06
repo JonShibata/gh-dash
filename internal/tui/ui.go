@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"runtime/debug"
@@ -455,16 +456,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, currSection.FetchNextPageSectionRows()...)
 				}
 			}
-			// `r` doubles as "reset everything": force a full repaint so any
-			// ghost/misaligned cells left by the frame-diff renderer are wiped.
-			cmds = append(cmds, tea.ClearScreen)
 
 		case key.Matches(msg, m.keys.RefreshAll):
 			data.ClearEnrichmentCache()
 			newSections, fetchSectionsCmds := m.fetchAllViewSections()
 			m.setCurrentViewSections(newSections)
 			cmds = append(cmds, fetchSectionsCmds)
-			cmds = append(cmds, tea.ClearScreen)
 
 		case key.Matches(msg, m.keys.Redraw):
 			// bubbletea v2's full-repaint trigger: clearScreen() marks the
@@ -1145,7 +1142,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if zone.Get("donate").InBounds(msg) {
 			log.Info("Donate clicked", "msg", msg)
 			openCmd := func() tea.Msg {
-				b := browser.New("", os.Stdout, os.Stdin)
+				// Discard stdio — see openBrowser in tasks.go: handing the
+				// launcher the live alt-screen (os.Stdout) lets it print
+				// out-of-band and ghost the TUI.
+				b := browser.New("", io.Discard, io.Discard)
 				err := b.Browse("https://github.com/sponsors/dlvhdr")
 				if err != nil {
 					return constants.ErrMsg{Err: err}
@@ -1284,9 +1284,20 @@ func (m Model) View() tea.View {
 		Width(m.ctx.ScreenWidth).
 		Height(m.ctx.ScreenHeight).
 		Render("")
+	// Clamp the content layer to the screen box. The base above pads a
+	// frame that renders short; MaxWidth/MaxHeight truncates one that
+	// renders tall or wide. Together the composite is *always* exactly
+	// ScreenWidth×ScreenHeight, so an over-sized frame can never scroll
+	// the alt-screen — the scroll is what desyncs tea's cell model and
+	// strands the prior frame as a ghost. This is the structural guard
+	// that lets the per-key ClearScreen band-aids go.
+	body := lipgloss.NewStyle().
+		MaxWidth(m.ctx.ScreenWidth).
+		MaxHeight(m.ctx.ScreenHeight).
+		Render(zone.Scan(s.String()))
 	layers := []*lipgloss.Layer{
 		lipgloss.NewLayer(base),
-		lipgloss.NewLayer(zone.Scan(s.String())),
+		lipgloss.NewLayer(body),
 	}
 
 	// Completions popup X anchor: left edge of the preview pane in split

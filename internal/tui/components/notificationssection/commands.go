@@ -3,6 +3,7 @@ package notificationssection
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -252,7 +253,9 @@ func (m *Model) openInBrowser() tea.Cmd {
 			}
 		},
 		func() tea.Msg {
-			b := browser.New("", os.Stdout, os.Stdin)
+			// Discard stdio — os.Stdout is the live alt-screen; letting the
+			// launcher print there ghosts the TUI. See openBrowser (tasks.go).
+			b := browser.New("", io.Discard, io.Discard)
 			err := b.Browse(notificationUrl)
 			if err != nil {
 				return constants.ErrMsg{Err: err}

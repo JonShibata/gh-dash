@@ -6,6 +6,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	slog "log"
 	"os"
 	"runtime"
@@ -17,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"charm.land/log/v2"
 	"github.com/charmbracelet/fang"
+	cliBrowser "github.com/cli/browser"
 	zone "github.com/lrstanley/bubblezone/v2"
 	"github.com/spf13/cobra"
 
@@ -229,6 +231,17 @@ func init() {
 		}
 
 		zone.NewGlobal()
+
+		// Silence the browser launcher's stdio. When no custom launcher is
+		// configured, go-gh's browser falls through to github.com/cli/browser,
+		// which runs xdg-open with its package-level Stdout/Stderr — both
+		// defaulting to os.Stdout/os.Stderr, i.e. the live alt-screen. That's
+		// how "Opening in existing browser session." (Chrome's own stderr) leaks
+		// into the TUI on `o`, desyncing tea's renderer and ghosting. The
+		// io.Discard passed to browser.New only covers the *custom*-launcher
+		// path; these globals cover the default path. See openBrowser (tasks.go).
+		cliBrowser.Stdout = io.Discard
+		cliBrowser.Stderr = io.Discard
 
 		model, logger := createModel(config.Location{RepoPath: repo, ConfigFlag: cfgFlag}, debug)
 		if logger != nil {

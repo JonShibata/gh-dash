@@ -3,7 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"reflect"
 	"time"
 
@@ -26,7 +26,11 @@ func (m *Model) openBrowser() tea.Cmd {
 	}
 	startCmd := m.ctx.StartTask(task)
 	openCmd := func() tea.Msg {
-		b := browser.New("", os.Stdout, os.Stdin)
+		// Discard the launcher's stdio: os.Stdout is the live alt-screen,
+		// so any line the browser (or xdg-open/Chrome) prints there —
+		// e.g. "Opening in existing browser session." — lands in the TUI
+		// out-of-band, desyncing tea's cell model and leaving a ghost.
+		b := browser.New("", io.Discard, io.Discard)
 		currRow := m.getCurrRowData()
 		if currRow == nil || reflect.ValueOf(currRow).IsNil() {
 			return constants.TaskFinishedMsg{
@@ -76,7 +80,11 @@ func (m *Model) openFirstFailedCheck() tea.Cmd {
 				Err:    errors.New("no failed checks"),
 			}
 		}
-		b := browser.New("", os.Stdout, os.Stdin)
+		// Discard the launcher's stdio: os.Stdout is the live alt-screen,
+		// so any line the browser (or xdg-open/Chrome) prints there —
+		// e.g. "Opening in existing browser session." — lands in the TUI
+		// out-of-band, desyncing tea's cell model and leaving a ghost.
+		b := browser.New("", io.Discard, io.Discard)
 		err := b.Browse(failedUrl)
 		return constants.TaskFinishedMsg{TaskId: taskId, Err: err}
 	}
