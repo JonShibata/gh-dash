@@ -50,10 +50,10 @@ type EnrichedPullRequestData struct {
 	HeadRef struct {
 		Name string
 	}
-	Labels             PRLabels  `graphql:"labels(first: 6)"`
-	Assignees          Assignees `graphql:"assignees(first: 3)"`
-	Repository         Repository
-	Commits LastCommitWithStatusChecks `graphql:"commits(last: 1)"`
+	Labels     PRLabels  `graphql:"labels(first: 6)"`
+	Assignees  Assignees `graphql:"assignees(first: 3)"`
+	Repository Repository
+	Commits    LastCommitWithStatusChecks `graphql:"commits(last: 1)"`
 	// Trimmed from last:100. Commits tab renders the list with status
 	// stats; >30 commits in a single PR is rare and bumping this is a
 	// per-tick rate-limit cost on auto-refresh.
@@ -114,15 +114,27 @@ type PullRequestData struct {
 	HeadRef struct {
 		Name string
 	}
-	Repository       Repository
-	Assignees        Assignees      `graphql:"assignees(first: 3)"`
-	Comments         Comments       `graphql:"comments"`
-	ReviewThreads    ReviewThreads  `graphql:"reviewThreads"`
-	Reviews          Reviews        `graphql:"reviews(last: 3)"`
-	ReviewRequests   ReviewRequests `graphql:"reviewRequests(last: 5)"`
-	Files            ChangedFiles   `graphql:"files(first: 5)"`
-	IsDraft          bool
-	IsInMergeQueue   bool
+	Repository    Repository
+	Assignees     Assignees     `graphql:"assignees(first: 3)"`
+	Comments      Comments      `graphql:"comments"`
+	ReviewThreads ReviewThreads `graphql:"reviewThreads"`
+	Reviews       Reviews       `graphql:"reviews(last: 3)"`
+	// Reviewer-sidebar fields. These used to live only on the per-PR
+	// enrichment fetch, so the sidebar's Reviewers section showed
+	// "Loading..." until that second round-trip returned (and the first PR
+	// opened at startup had nothing to prefetch it). They are shallow
+	// connections (one node per author, no nested comments), so carrying
+	// them in the per-tick list query is cheap; the section now paints
+	// immediately from Primary for every PR. The heavier enrichment still
+	// upgrades them (larger page + suggestedReviewers). first:30 vs the
+	// enrichment's 100 keeps the list-query cost down; >30 distinct
+	// reviewers on one PR is effectively unheard of.
+	ReviewRequests           ReviewRequests `graphql:"reviewRequests(last: 20)"`
+	LatestReviews            Reviews        `graphql:"latestReviews(first: 30)"`
+	LatestOpinionatedReviews Reviews        `graphql:"latestOpinionatedReviews(first: 30)"`
+	Files                    ChangedFiles   `graphql:"files(first: 5)"`
+	IsDraft                  bool
+	IsInMergeQueue           bool
 	// AutoMergeRequest is non-nil-shaped when `gh pr merge --auto` (or the
 	// web UI equivalent) has been set — but the PR may still be waiting on
 	// checks/approvals before the merge queue picks it up. Use the inner
@@ -166,6 +178,7 @@ func (data PullRequestData) FormatEstimatedTimeToMerge() string {
 	h, m := totalMin/60, totalMin%60
 	return fmt.Sprintf("%d:%02d", h, m)
 }
+
 type CheckRun struct {
 	Name       graphql.String
 	Status     graphql.String

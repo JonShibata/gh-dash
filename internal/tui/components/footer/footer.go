@@ -23,17 +23,12 @@ const viewSeparator = " │ "
 type Model struct {
 	ctx             *context.ProgramContext
 	leftSection     *string
-	rightSection    *string
 	help            bbHelp.Model
 	ShowAll         bool
+	// ShowConfirmQuit is a state flag consumed by the main view to render
+	// the quit-confirmation modal overlay; the footer no longer draws it
+	// in the bar.
 	ShowConfirmQuit bool
-	// pendingPrompt is a confirmation prompt (e.g. "Are you sure you
-	// want to convert this PR back to draft? (Y/n)") that should
-	// occupy the full bottom bar so long messages aren't truncated by
-	// the view switcher and right-side indicators. Empty string =
-	// not in prompt mode → normal viewSwitcher/leftSection/etc.
-	// layout. Mirrors ShowConfirmQuit's "take over the bar" pattern.
-	pendingPrompt string
 }
 
 func NewModel(ctx *context.ProgramContext) Model {
@@ -41,31 +36,21 @@ func NewModel(ctx *context.ProgramContext) Model {
 	help.ShowAll = true
 	help.Styles = ctx.Styles.Help.BubbleStyles
 	l := ""
-	r := ""
 	return Model{
-		ctx:          ctx,
-		help:         help,
-		leftSection:  &l,
-		rightSection: &r,
+		ctx:         ctx,
+		help:        help,
+		leftSection: &l,
 	}
 }
 
 func (m Model) View() string {
 	var footer string
 
-	switch {
-	case m.ShowConfirmQuit:
-		footer = lipgloss.NewStyle().
-			Render("Really quit? (Press y/enter to confirm, any other key to cancel)")
-	case m.pendingPrompt != "":
-		// Dedicate the whole bottom bar to the prompt so long
-		// confirmation messages aren't truncated. Background style
-		// matches the surrounding footer so it reads as a single
-		// strip rather than a floating element.
-		footer = m.ctx.Styles.Common.FooterStyle.
-			Width(m.ctx.ScreenWidth).
-			Render(m.pendingPrompt)
-	default:
+	// Confirmations (quit, section actions, notification actions) and
+	// transient status messages are no longer drawn in the bar; they render
+	// as centered-modal / toast overlays in the main view. The footer only
+	// carries the view switcher, pager, and help/donate chrome.
+	{
 		helpIndicator := lipgloss.NewStyle().
 			Background(m.ctx.Theme.FaintText).
 			Foreground(m.ctx.Theme.SelectedBackground).
@@ -82,10 +67,6 @@ func (m Model) View() string {
 		if m.leftSection != nil {
 			leftSection = *m.leftSection
 		}
-		rightSection := ""
-		if m.rightSection != nil {
-			rightSection = *m.rightSection
-		}
 		spacing := lipgloss.NewStyle().
 			Background(m.ctx.Theme.SelectedBackground).
 			Render(
@@ -95,7 +76,6 @@ func (m Model) View() string {
 						m.ctx.ScreenWidth-lipgloss.Width(
 							viewSwitcher,
 						)-lipgloss.Width(leftSection)-
-							lipgloss.Width(rightSection)-
 							lipgloss.Width(
 								helpIndicator,
 							)-lipgloss.Width(donationIndicator),
@@ -103,7 +83,7 @@ func (m Model) View() string {
 
 		footer = m.ctx.Styles.Common.FooterStyle.
 			Render(lipgloss.JoinHorizontal(lipgloss.Top, viewSwitcher, leftSection, spacing,
-				rightSection, donationIndicator, helpIndicator))
+				donationIndicator, helpIndicator))
 	}
 
 	if m.ShowAll {
@@ -285,15 +265,3 @@ func (m *Model) SetLeftSection(leftSection string) {
 	*m.leftSection = leftSection
 }
 
-// SetPendingPrompt swaps the bottom bar into "prompt mode" — the
-// passed string fills the entire footer width so long confirmation
-// messages aren't truncated by the surrounding view-switcher and
-// indicator chrome. Pass "" to exit prompt mode and restore the
-// normal layout.
-func (m *Model) SetPendingPrompt(prompt string) {
-	m.pendingPrompt = prompt
-}
-
-func (m *Model) SetRightSection(rightSection string) {
-	*m.rightSection = rightSection
-}

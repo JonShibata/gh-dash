@@ -392,7 +392,11 @@ func TestRenderRequestedReviewersWrapping(t *testing.T) {
 		"expected output to wrap to multiple lines, got %d lines: %q", len(lines), got)
 }
 
-func TestRenderRequestedReviewersLoading(t *testing.T) {
+// Before the reviewer fields were carried in the list query, the sidebar
+// showed "Loading..." until the per-PR enrichment fetch returned. Now the
+// section renders immediately from Primary (the list query), so there is no
+// Loading state: an un-enriched PR still shows its reviewers.
+func TestRenderRequestedReviewersFromPrimary(t *testing.T) {
 	cfg, err := config.ParseConfig(config.Location{
 		ConfigFlag:       "../../../config/testdata/test-config.yml",
 		SkipGlobalConfig: true,
@@ -411,8 +415,32 @@ func TestRenderRequestedReviewersLoading(t *testing.T) {
 	m.pr = &prrow.PullRequest{
 		Ctx: ctx,
 		Data: &prrow.Data{
-			Primary:    &data.PullRequestData{},
-			IsEnriched: false, // Not yet enriched - should show loading
+			// Not enriched: the reviewer data comes from the list query's
+			// Primary payload, so the section must still render.
+			IsEnriched: false,
+			Primary: &data.PullRequestData{
+				ReviewRequests: data.ReviewRequests{
+					TotalCount: 1,
+					Nodes: []data.ReviewRequestNode{
+						{
+							RequestedReviewer: struct {
+								User      data.RequestedReviewerUser      `graphql:"... on User"`
+								Team      data.RequestedReviewerTeam      `graphql:"... on Team"`
+								Bot       data.RequestedReviewerBot       `graphql:"... on Bot"`
+								Mannequin data.RequestedReviewerMannequin `graphql:"... on Mannequin"`
+							}{
+								User: data.RequestedReviewerUser{Login: "alice"},
+							},
+						},
+					},
+				},
+				LatestReviews: data.Reviews{
+					TotalCount: 1,
+					Nodes: []data.Review{
+						{Author: struct{ Login string }{Login: "bob"}, State: "APPROVED"},
+					},
+				},
+			},
 		},
 	}
 
@@ -420,8 +448,12 @@ func TestRenderRequestedReviewersLoading(t *testing.T) {
 
 	require.True(t, strings.Contains(got, "Reviewers"),
 		"expected output to contain 'Reviewers' title, got: %q", got)
-	require.True(t, strings.Contains(got, "Loading..."),
-		"expected output to contain 'Loading...', got: %q", got)
+	require.True(t, strings.Contains(got, "@alice"),
+		"expected requested reviewer '@alice' from Primary, got: %q", got)
+	require.True(t, strings.Contains(got, "@bob"),
+		"expected reviewer '@bob' from Primary, got: %q", got)
+	require.False(t, strings.Contains(got, "Loading..."),
+		"expected no 'Loading...' now that reviewers come from the list query, got: %q", got)
 }
 
 func TestRenderSuggestedReviewers(t *testing.T) {

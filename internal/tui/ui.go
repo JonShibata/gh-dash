@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"io"
 	"os"
 	"reflect"
@@ -31,6 +32,7 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/notificationrow"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/notificationssection"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/notificationview"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/overlay"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prrow"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prssection"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/prview"
@@ -237,7 +239,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.notificationView.HasPendingAction() {
 			var action string
 			m.notificationView, action = m.notificationView.Update(msg)
-			m.footer.SetPendingPrompt("")
 			if action != "" {
 				return m, m.executeNotificationAction(action)
 			}
@@ -1078,15 +1079,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinner.TickMsg:
 		if len(m.tasks) > 0 {
+			// Keep the spinner ticking so the running-task toast animates
+			// and lifecycle timers fire; the toast itself is rendered as an
+			// overlay layer in View(), not in the footer.
 			taskSpinner, internalTickCmd := m.taskSpinner.Update(msg)
 			m.taskSpinner = taskSpinner
-			rTask := m.renderRunningTask()
-			m.footer.SetRightSection(rTask)
 			cmd = internalTickCmd
 		}
 
 	case constants.ClearTaskMsg:
-		m.footer.SetRightSection("")
 		delete(m.tasks, msg.TaskId)
 
 	case section.SectionMsg:
@@ -1187,11 +1188,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if currSection != nil {
+		// The confirmation prompt is now rendered as a centered modal
+		// overlay (see renderModalOverlay); the footer only carries the
+		// pager. Blank the pager while a prompt is focused so the bar
+		// stays quiet behind the dialog.
 		if currSection.IsPromptConfirmationFocused() {
-			m.footer.SetPendingPrompt(currSection.GetPromptConfirmation())
 			m.footer.SetLeftSection("")
 		} else {
-			m.footer.SetPendingPrompt("")
 			m.footer.SetLeftSection(currSection.GetPagerContent())
 		}
 	}
@@ -1318,6 +1321,22 @@ func (m Model) View() tea.View {
 	if issueCmp != "" {
 		y := m.ctx.ScreenHeight - common.FooterHeight - m.issueSidebar.InputBoxLineFromButton() - common.InputBoxHeight - 4
 		layers = append(layers, lipgloss.NewLayer(issueCmp).X(overlayX).Y(y))
+	}
+
+	// Transient status toast: floats above the footer, right-aligned. As
+	// its own layer it sizes to its content and wraps, so long messages
+	// (URLs, error text) are never clipped by the footer's fixed chrome.
+	if toast := m.renderToastOverlay(); toast != "" {
+		x := max(0, m.ctx.ScreenWidth-lipgloss.Width(toast)-2)
+		y := max(0, m.ctx.ScreenHeight-lipgloss.Height(toast)-common.FooterHeight-1)
+		layers = append(layers, lipgloss.NewLayer(toast).X(x).Y(y))
+	}
+
+	// Confirmation modal: centered, on top of everything (added last).
+	if modal := m.renderModalOverlay(); modal != "" {
+		x := max(0, (m.ctx.ScreenWidth-lipgloss.Width(modal))/2)
+		y := max(0, (m.ctx.ScreenHeight-lipgloss.Height(modal))/2)
+		layers = append(layers, lipgloss.NewLayer(modal).X(x).Y(y))
 	}
 
 	comp := lipgloss.NewCompositor(layers...)
@@ -2124,11 +2143,11 @@ func (m *Model) isUserDefinedKeybinding(msg tea.KeyMsg) bool {
 	return false
 }
 
-func (m *Model) renderRunningTask() string {
+func (m *Model) renderToastOverlay() string {
 	tasks := make([]context.Task, 0, len(m.tasks))
 	for _, value := range m.tasks {
 		// Silent tasks are background fetches (e.g. auto-refresh); they
-		// have lifecycle in m.tasks but never surface in the status bar.
+		// have lifecycle in m.tasks but never surface as a toast.
 		if value.Silent {
 			continue
 		}
@@ -2152,47 +2171,68 @@ func (m *Model) renderRunningTask() string {
 	})
 	task := tasks[0]
 
-	var currTaskStatus string
-	switch task.State {
-	case context.TaskStart:
-		currTaskStatus = lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			m.taskSpinner.View(),
-			lipgloss.NewStyle().
-				Background(m.ctx.Theme.SelectedBackground).Render(task.StartText),
-		)
-	case context.TaskError:
-		currTaskStatus = lipgloss.NewStyle().
-			Foreground(m.ctx.Theme.ErrorText).
-			Background(m.ctx.Theme.SelectedBackground).
-			Render(fmt.Sprintf("%s %s", constants.FailureIcon, task.Error.Error()))
-	case context.TaskFinished:
-		currTaskStatus = lipgloss.NewStyle().
-			Foreground(m.ctx.Theme.SuccessText).
-			Background(m.ctx.Theme.SelectedBackground).
-			Render(fmt.Sprintf("%s %s", constants.SuccessIcon, task.FinishedText))
-	}
-
 	var numProcessing int
-	for _, task := range m.tasks {
-		if task.State == context.TaskStart {
+	for _, t := range m.tasks {
+		if t.State == context.TaskStart {
 			numProcessing += 1
 		}
 	}
 
-	stats := ""
-	if numProcessing > 1 {
-		stats = lipgloss.NewStyle().
-			Foreground(m.ctx.Theme.FaintText).
-			Background(m.ctx.Theme.SelectedBackground).
-			Render(fmt.Sprintf("[ %d] ", numProcessing))
+	var icon, message string
+	var accent color.Color
+	switch task.State {
+	case context.TaskStart:
+		icon = m.taskSpinner.View()
+		accent = m.ctx.Theme.FaintText
+		message = task.StartText
+	case context.TaskError:
+		icon = m.ctx.Styles.Common.FailureGlyph
+		accent = m.ctx.Theme.ErrorText
+		message = task.Error.Error()
+	case context.TaskFinished:
+		icon = m.ctx.Styles.Common.SuccessGlyph
+		accent = m.ctx.Theme.SuccessText
+		message = task.FinishedText
 	}
 
-	return lipgloss.NewStyle().
-		Padding(0, 1).
-		Height(1).
-		Background(m.ctx.Theme.SelectedBackground).
-		Render(strings.TrimSpace(lipgloss.JoinHorizontal(lipgloss.Top, stats, currTaskStatus)))
+	// Multi-task badge when several actions run at once.
+	if numProcessing > 1 {
+		message = fmt.Sprintf("[%d] %s", numProcessing, message)
+	}
+
+	return overlay.Toast(m.ctx, icon, accent, message)
+}
+
+// renderModalOverlay renders the active confirmation dialog as a centered
+// modal (empty string = none). It unifies the three previously footer-bound
+// confirmation flows (quit, section actions, notification actions) into one
+// prominent, bordered dialog.
+func (m *Model) renderModalOverlay() string {
+	accent := m.ctx.Theme.WarningText
+
+	if m.footer.ShowConfirmQuit {
+		return overlay.Modal(m.ctx, "Quit gh-dash?", accent,
+			"Are you sure you want to quit?",
+			"y/enter confirm · any other key cancel")
+	}
+
+	if cs := m.getCurrSection(); cs != nil && cs.IsPromptConfirmationFocused() {
+		title, hint := "Confirm", "y/enter confirm · esc cancel"
+		switch cs.GetPromptConfirmationAction() {
+		case "new", "create_pr":
+			title, hint = "Input required", "enter submit · esc cancel"
+		}
+		return overlay.Modal(m.ctx, title, accent, cs.GetPromptConfirmation(), hint)
+	}
+
+	if m.notificationView.HasPendingAction() {
+		if prompt := m.notificationView.GetPendingActionPrompt(); prompt != "" {
+			return overlay.Modal(m.ctx, "Confirm", accent, prompt,
+				"y/enter confirm · any other key cancel")
+		}
+	}
+
+	return ""
 }
 
 type userFetchedMsg struct {
@@ -2285,7 +2325,8 @@ func (m *Model) promptConfirmationForNotificationPR(action string) tea.Cmd {
 	if prompt == "" {
 		return nil
 	}
-	m.footer.SetPendingPrompt(prompt)
+	// Prompt is rendered as a centered modal overlay (renderModalOverlay),
+	// sourced from the notification view's pending action.
 	return nil
 }
 
@@ -2296,7 +2337,8 @@ func (m *Model) promptConfirmationForNotificationIssue(action string) tea.Cmd {
 	if prompt == "" {
 		return nil
 	}
-	m.footer.SetPendingPrompt(prompt)
+	// Prompt is rendered as a centered modal overlay (renderModalOverlay),
+	// sourced from the notification view's pending action.
 	return nil
 }
 

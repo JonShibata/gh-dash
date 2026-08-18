@@ -26,6 +26,9 @@ type Model struct {
 
 	// Pending confirmation action for PR/Issue (e.g., "pr_close", "issue_reopen")
 	pendingAction string
+	// pendingPrompt is the human-readable confirmation text for pendingAction,
+	// rendered by the main view as a centered modal overlay.
+	pendingPrompt string
 }
 
 func NewModel(ctx *context.ProgramContext) Model {
@@ -100,11 +103,12 @@ func (m *Model) SetPendingPRAction(action string) string {
 	case "approveWorkflows":
 		actionDisplay = "approve all workflows for"
 	}
-	return fmt.Sprintf(
+	m.pendingPrompt = fmt.Sprintf(
 		"Are you sure you want to %s PR #%d? (y/N)",
 		actionDisplay,
 		m.subjectPR.GetNumber(),
 	)
+	return m.pendingPrompt
 }
 
 // SetPendingIssueAction sets a pending Issue action and returns the confirmation prompt.
@@ -116,11 +120,12 @@ func (m *Model) SetPendingIssueAction(action string) string {
 	}
 	m.pendingAction = "issue_" + action
 
-	return fmt.Sprintf(
+	m.pendingPrompt = fmt.Sprintf(
 		"Are you sure you want to %s Issue #%d? (y/N)",
 		action,
 		m.subjectIssue.Number,
 	)
+	return m.pendingPrompt
 }
 
 // HasPendingAction returns true if there is a pending action awaiting confirmation.
@@ -133,9 +138,16 @@ func (m *Model) GetPendingAction() string {
 	return m.pendingAction
 }
 
+// GetPendingActionPrompt returns the confirmation text for the pending
+// action (empty if none), used to render the confirmation modal.
+func (m *Model) GetPendingActionPrompt() string {
+	return m.pendingPrompt
+}
+
 // ClearPendingAction clears any pending action.
 func (m *Model) ClearPendingAction() {
 	m.pendingAction = ""
+	m.pendingPrompt = ""
 }
 
 // Update handles key messages for confirmation dialogs.
@@ -150,10 +162,12 @@ func (m Model) Update(msg tea.Msg) (Model, string) {
 		if msg.String() == "y" || msg.String() == "Y" || msg.Code == tea.KeyEnter {
 			action := m.pendingAction
 			m.pendingAction = ""
+			m.pendingPrompt = ""
 			return m, action
 		}
 		// Any other key cancels the confirmation
 		m.pendingAction = ""
+		m.pendingPrompt = ""
 	}
 
 	return m, ""

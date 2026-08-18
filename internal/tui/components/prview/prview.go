@@ -415,29 +415,31 @@ type reviewerItem struct {
 	text string
 }
 
-func (m *Model) renderRequestedReviewers() string {
-	if !m.pr.Data.IsEnriched {
-		return lipgloss.JoinVertical(
-			lipgloss.Left,
-			m.ctx.Styles.Common.MainTextStyle.Underline(true).Bold(true).Render(
-				fmt.Sprintf("%s Reviewers", constants.CodeReviewIcon)),
-			"",
-			lipgloss.JoinHorizontal(
-				lipgloss.Top,
-				m.ctx.Styles.Common.WaitingGlyph,
-				" ",
-				m.ctx.Styles.Common.FaintTextStyle.Render("Loading..."),
-			),
-		)
+// reviewerSources returns the four datasets the Reviewers sidebar renders.
+// The shallow reviewer fields (requested reviewers + one deduped review per
+// author) now ride in the per-tick list query, so the section paints
+// immediately from Primary, with no "Loading..." round-trip, for every PR
+// including the first one opened at startup. Once the heavier per-PR
+// enrichment lands it takes over: a larger page plus suggestedReviewers (a
+// git-blame-based computation kept out of the per-tick list query). Mirrors
+// changedFiles()'s Primary->Enriched fallback.
+func (m *Model) reviewerSources() (reviewRequests []data.ReviewRequestNode, reviews, opinionatedReviews []data.Review, suggested []data.SuggestedReviewer) {
+	if m.pr.Data.IsEnriched {
+		e := m.pr.Data.Enriched
+		return e.ReviewRequests.Nodes, e.LatestReviews.Nodes, e.LatestOpinionatedReviews.Nodes, e.SuggestedReviewers
 	}
+	if p := m.pr.Data.Primary; p != nil {
+		// suggestedReviewers is enrichment-only; nil here is fine.
+		return p.ReviewRequests.Nodes, p.LatestReviews.Nodes, p.LatestOpinionatedReviews.Nodes, nil
+	}
+	return nil, nil, nil, nil
+}
 
-	reviewRequests := m.pr.Data.Enriched.ReviewRequests.Nodes
+func (m *Model) renderRequestedReviewers() string {
 	// latestReviews is one node per author (so no reviewer is truncated out
 	// of the fetch window by a chatty peer); latestOpinionatedReviews is the
-	// latest APPROVED/CHANGES_REQUESTED per author. See EnrichedPullRequestData.
-	reviews := m.pr.Data.Enriched.LatestReviews.Nodes
-	opinionatedReviews := m.pr.Data.Enriched.LatestOpinionatedReviews.Nodes
-	suggestedReviewers := m.pr.Data.Enriched.SuggestedReviewers
+	// latest APPROVED/CHANGES_REQUESTED per author. See reviewerSources.
+	reviewRequests, reviews, opinionatedReviews, suggestedReviewers := m.reviewerSources()
 
 	if len(reviewRequests) == 0 && len(reviews) == 0 && len(suggestedReviewers) == 0 {
 		return ""
