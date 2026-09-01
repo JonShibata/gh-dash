@@ -1,6 +1,7 @@
 package prview
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -274,6 +275,7 @@ func TestPickReplyTargetUsesCursor(t *testing.T) {
 	enriched := data.EnrichedPullRequestData{}
 	mkThread := func(id int, resolved bool, updated time.Time) data.ReviewThread {
 		return data.ReviewThread{
+			Id:         fmt.Sprintf("thread-%d", id),
 			IsResolved: resolved,
 			Comments: data.ReviewComments{Nodes: []data.ReviewComment{
 				{DatabaseId: id, UpdatedAt: updated},
@@ -288,6 +290,7 @@ func TestPickReplyTargetUsesCursor(t *testing.T) {
 	)
 	m.pr.Data.Enriched = enriched
 	m.pr.Data.IsEnriched = true
+	buildActivity(t, &m)
 
 	// Default cursor (idx 0) targets the oldest/topmost thread.
 	require.Equal(t, 111, m.pickReplyTarget())

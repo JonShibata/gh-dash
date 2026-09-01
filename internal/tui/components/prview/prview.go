@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	log "charm.land/log/v2"
@@ -53,30 +54,36 @@ type Model struct {
 	// R combo). Empty for a plain reply (r). Consumed and cleared by Update
 	// on submit alongside replyTargetCommentId.
 	replyThenResolveThreadId string
-	// threadCursorIdx is the index into allThreads() that the user has
-	// focused on the Activity tab. allThreads() is ordered oldest-first to
-	// match the rendered body, so idx 0 is the topmost thread. R/X act on
-	// this thread. Reset to 0 on PR change. Clamped on cursor move.
-	threadCursorIdx int
-	// threadLineOffsets maps a thread's GraphQL Id to its starting line
-	// offset within the rendered Activity body (including viewHeader so
-	// these are absolute viewport coordinates). Populated by
-	// renderActivity; consumed by the parent on n/N and the reply-mode
-	// scroll-to-bottom logic.
-	threadLineOffsets map[string]int
-	// threadLineEnds is the line just past each thread block's last
-	// visible line. Equals threadLineOffsets[id] + height of the
-	// rendered block (including the inline reply input when reply
-	// mode is on). Used to bottom-align the input in the viewport.
-	threadLineEnds map[string]int
+	// activityCursor is the index of the selected row in the Activity tab's
+	// unified list (activityItems), which is ordered oldest-first to match
+	// the list pane's top-to-bottom layout. n/N move it; x/r/R act on it
+	// when the selected row is a review thread. Reset to 0 on PR change,
+	// clamped on move.
+	activityCursor int
+	// activityList is the top pane: a pinned, scrollable list of one-line
+	// activity rows. activityDetail is the bottom pane: the full render of
+	// the selected row. Both are populated by SyncActivity (a pointer
+	// method) so their scroll state persists across the value-receiver
+	// View(). Splitting the tab into these two viewports is what removes the
+	// old reflow-on-scroll bug: list rows are fixed height and the detail
+	// scrolls on its own.
+	activityList   viewport.Model
+	activityDetail viewport.Model
+	// activityItems is the pre-rendered unified activity list, rebuilt only
+	// when the data or width changes (activityDirty). Each item holds its
+	// list row and its detail, so scrolling never re-renders.
+	activityItems []activityItem
+	// activityDirty marks activityItems as needing a rebuild (set on PR
+	// data change, enrichment swap, width change, and theme change).
+	activityDirty bool
+	// loadedDetailKey identifies which item's detail is currently loaded in
+	// activityDetail, so SyncActivity reloads (and resets scroll) only when
+	// the selection actually changes. Empty forces a reload.
+	loadedDetailKey string
 	// viewportHeight is the current sidebar viewport content height (in
-	// lines), refreshed by the parent on every syncSidebar. renderActivity
-	// uses it two ways: (1) in reply mode it pads ABOVE the focused thread so
-	// its end lands at the viewport bottom even near the document top
-	// (YOffset can't go negative); (2) it pads BELOW the last thread so n/N
-	// can anchor every thread at the same top row instead of the viewport
-	// clamping the final threads mid-screen. Zero before the first sync, in
-	// which case both paddings no-op.
+	// lines), refreshed by the parent on every syncSidebar. SyncActivity
+	// uses it to size the list and detail panes so the tab exactly fills
+	// the viewport (no outer scroll). Zero before the first sync.
 	viewportHeight int
 	// imageHints is the ordered list of (label, url) pairs for every
 	// image embedded in the current PR's bodies. Rebuilt on PR change
@@ -116,13 +123,11 @@ func NewModel(ctx *context.ProgramContext) Model {
 		pr:       nil,
 		carousel: c,
 		editor:   cmpcontroller.New(ctx, inputbox.ModelOpts{TextArea: &ta}),
-		// Allocate the offset maps here so renderActivity can mutate
-		// them in place (delete + assign). View() is a VALUE receiver,
-		// so re-assigning these fields inside it would be lost — but
-		// mutations to the underlying map persist because maps are
-		// reference types.
-		threadLineOffsets: map[string]int{},
-		threadLineEnds:    map[string]int{},
+		// The two Activity-tab panes. Dimensions and content are set by
+		// SyncActivity on every sidebar sync; they start empty.
+		activityList:   viewport.New(viewport.WithWidth(0), viewport.WithHeight(0)),
+		activityDetail: viewport.New(viewport.WithWidth(0), viewport.WithHeight(0)),
+		activityDirty:  true,
 	}
 }
 
@@ -227,12 +232,17 @@ func (m Model) View() string {
 		return ""
 	}
 
+	// The Activity tab owns its own two-pane layout (list + detail) and is
+	// sized to fill the viewport itself, so it composes viewHeader on its
+	// own rather than sharing the padded-body path below.
+	if m.carousel.SelectedItem() == ActivityTab {
+		return m.viewActivity()
+	}
+
 	body := strings.Builder{}
 	switch m.carousel.SelectedItem() {
 	case tabs[0]:
 		body.WriteString(m.viewOverviewTab())
-	case tabs[1]:
-		body.WriteString(m.renderActivity())
 	case tabs[2]:
 		body.WriteString(m.renderCommits())
 	case tabs[3]:
@@ -717,7 +727,16 @@ func (m *Model) SetRow(d *prrow.Data) {
 		newNumber = d.GetNumber()
 	}
 	if newNumber != prevNumber {
-		m.threadCursorIdx = 0
+		// Switched to a different PR: reset the selection and rebuild the
+		// activity list. Do NOT mark dirty on same-PR SetRow calls:
+		// syncSidebar calls SetRow on every keystroke, and a rebuild there
+		// would reset the detail pane to the top and wipe j/k scrolling.
+		// Content changes within a PR are marked dirty by their own setters
+		// (SetEnrichedPR, SetThreadResolvedOptimistic, SetWidth,
+		// UpdateProgramContext).
+		m.activityCursor = 0
+		m.loadedDetailKey = ""
+		m.activityDirty = true
 	}
 	m.RebuildImageHints()
 }
@@ -772,6 +791,11 @@ func (m *Model) RefreshEnrichedCurrRow() tea.Cmd {
 }
 
 func (m *Model) SetWidth(width int) {
+	if width != m.width {
+		// Width drives the pre-rendered activity rows/details, so a change
+		// invalidates them.
+		m.activityDirty = true
+	}
 	m.width = width
 	m.carousel.SetWidth(width) // header carousel is NOT padded — keep full width
 	// The editor renders inside the body's content padding (both sides) AND
@@ -793,6 +817,8 @@ func (m *Model) GetIsCommenting() bool {
 
 func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {
 	m.ctx = ctx
+	// Theme/context change affects the pre-rendered activity colors.
+	m.activityDirty = true
 	m.editor.UpdateProgramContext(ctx)
 	m.carousel.SetStyles(
 		carousel.Styles{
@@ -1012,10 +1038,11 @@ func (m *Model) SetSummaryViewLess() {
 // SetThreadResolvedOptimistic flips a review thread's IsResolved flag in
 // the enriched data immediately, so the UI reflects a resolve/unresolve
 // the instant the user confirms it instead of waiting for the next
-// refetch. Mutates the SOURCE slice in place by index (allThreads()
-// returns a copy, so mutating that would be lost). The next EnrichedPrMsg
-// overwrites Enriched wholesale (SetEnrichedPR), reconciling to server
-// truth — so a failed mutation simply reverts on the next tick.
+// refetch. Mutates the SOURCE slice in place by index. The next
+// EnrichedPrMsg overwrites Enriched wholesale (SetEnrichedPR), reconciling
+// to server truth, so a failed mutation simply reverts on the next tick.
+// The caller also marks the activity list dirty so the row/detail re-render
+// with the new state.
 func (m *Model) SetThreadResolvedOptimistic(id string, resolved bool) {
 	if m.pr == nil || m.pr.Data == nil || !m.pr.Data.IsEnriched {
 		return
@@ -1024,6 +1051,9 @@ func (m *Model) SetThreadResolvedOptimistic(id string, resolved bool) {
 	for i := range nodes {
 		if nodes[i].Id == id {
 			nodes[i].IsResolved = resolved
+			// The pre-rendered row + detail must rebuild so the resolved
+			// pill and gutter reflect the flip immediately.
+			m.activityDirty = true
 			return
 		}
 	}
@@ -1034,6 +1064,8 @@ func (m *Model) SetEnrichedPR(data data.EnrichedPullRequestData) {
 		m.pr.Data.Enriched = data
 		m.pr.Data.IsEnriched = true
 	}
+	// New enrichment payload: rebuild the activity list from it.
+	m.activityDirty = true
 	m.RebuildImageHints()
 }
 
@@ -1229,170 +1261,61 @@ func (m *Model) enterReplyEditor(isReplying, alsoResolve bool) tea.Cmd {
 	return cmd
 }
 
-// allThreads returns the visible review threads in the same top-to-bottom
-// order renderActivity lays them out: oldest root comment first. The
-// activity body sorts every entry by UpdatedAt ascending, so the cursor
-// MUST walk threads in that same ascending order — otherwise n/N (and the
-// scroll-follow in SetThreadCursorAtLine) move the wrong way: "next" would
-// jump UP the page and "previous" DOWN. Keying on the root comment's
-// UpdatedAt mirrors renderActivity's per-thread sort key exactly, so
-// cursor order == visual order regardless of how GraphQL returned the
-// nodes. Includes resolved threads — the cursor walks them too so x can
-// toggle resolve/unresolve. Threads with zero comments are dropped
-// (nothing to act on).
-func (m *Model) allThreads() []data.ReviewThread {
-	if m.pr == nil || m.pr.Data == nil || !m.pr.Data.IsEnriched {
-		return nil
+// selectedActivity returns the activity row under the list cursor, or
+// ok=false when the list is empty or the cursor is out of range.
+func (m *Model) selectedActivity() (activityItem, bool) {
+	if m.activityCursor < 0 || m.activityCursor >= len(m.activityItems) {
+		return activityItem{}, false
 	}
-	src := m.pr.Data.Enriched.ReviewThreads.Nodes
-	out := make([]data.ReviewThread, 0, len(src))
-	for _, t := range src {
-		if len(t.Comments.Nodes) == 0 {
-			continue
-		}
-		out = append(out, t)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].Comments.Nodes[0].UpdatedAt.Before(out[j].Comments.Nodes[0].UpdatedAt)
-	})
-	return out
+	return m.activityItems[m.activityCursor], true
 }
 
-// focusedThread returns the thread under the cursor on the Activity
-// tab, or zero-value when no threads exist.
-func (m *Model) focusedThread() (data.ReviewThread, bool) {
-	threads := m.allThreads()
-	if len(threads) == 0 {
+// threadById looks up an enriched review thread by its GraphQL node id.
+func (m *Model) threadById(id string) (data.ReviewThread, bool) {
+	if m.pr == nil || m.pr.Data == nil || !m.pr.Data.IsEnriched {
 		return data.ReviewThread{}, false
 	}
-	idx := m.threadCursorIdx
-	if idx < 0 {
-		idx = 0
+	for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
+		if t.Id == id {
+			return t, true
+		}
 	}
-	if idx >= len(threads) {
-		idx = len(threads) - 1
-	}
-	return threads[idx], true
+	return data.ReviewThread{}, false
 }
 
-// focusedThreadPosition returns the 0-based index of the focused thread
-// and the total thread count, clamped to match focusedThread(). ok=false
-// when there are no threads. Used by the activity-tab action bar to show
-// "n/m" so the user can see which thread x/r/R will act on.
-func (m *Model) focusedThreadPosition() (idx, count int, ok bool) {
-	threads := m.allThreads()
-	count = len(threads)
-	if count == 0 {
-		return 0, 0, false
+// focusedThread returns the review thread for the selected list row, or
+// ok=false when the selected row is a comment/review (so x/r/R no-op) or
+// when there is no selection.
+func (m *Model) focusedThread() (data.ReviewThread, bool) {
+	sel, ok := m.selectedActivity()
+	if !ok || sel.kind != kindThread {
+		return data.ReviewThread{}, false
 	}
-	idx = m.threadCursorIdx
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= count {
-		idx = count - 1
-	}
-	return idx, count, true
+	return m.threadById(sel.threadId)
 }
 
 // pickReplyTarget returns the root-comment databaseId of the focused
 // thread (the one R/X act on). 0 when there's nothing to reply to.
 func (m *Model) pickReplyTarget() int {
 	t, ok := m.focusedThread()
-	if !ok {
+	if !ok || len(t.Comments.Nodes) == 0 {
 		return 0
 	}
 	return t.Comments.Nodes[0].DatabaseId
 }
 
-// SetThreadCursorAtLine snaps the activity-tab thread cursor to the
-// thread that contains the given absolute line of the rendered Activity
-// body. Used for "cursor follows scroll" behavior — the parent passes
-// in the line at the vertical midpoint of the viewport (YOffset +
-// Height/2) and the cursor lands on whichever thread the user is
-// looking at. Returns true when the cursor index actually changed.
-//
-// Walks allThreads() in cursor order (oldest first → array index
-// ascending, matching the rendered top-to-bottom layout). A line is
-// considered "in" thread T if T's start offset
-// is the largest one ≤ targetLine — i.e., the line falls between T's
-// start and the next thread's start. Falls back to index 0 (top
-// thread) when nothing matches; that covers the case where the user
-// is scrolled above the first thread (looking at the activity title).
-//
-// Using the viewport's MIDPOINT (rather than its top) means that when
-// two threads fit on the screen at once, both can be focused as the
-// user scrolls — at top of viewport you're in the first, scroll a few
-// lines and the midpoint crosses into the second.
-func (m *Model) SetThreadCursorAtLine(targetLine int) bool {
-	threads := m.allThreads()
-	if len(threads) == 0 || m.threadLineOffsets == nil {
-		return false
-	}
-	best := 0
-	bestOffset := -1
-	for i, t := range threads {
-		off, ok := m.threadLineOffsets[t.Id]
-		if !ok {
-			continue
-		}
-		if off <= targetLine && off > bestOffset {
-			best = i
-			bestOffset = off
-		}
-	}
-	if best == m.threadCursorIdx {
-		return false
-	}
-	m.threadCursorIdx = best
-	return true
-}
-
-// FocusedThreadLineOffset returns the line offset of the focused
-// thread within the most-recently-rendered Activity body. Returns 0
-// when there is no focused thread or when renderActivity hasn't run
-// yet (no offsets recorded). Used by the parent's n/N handler to
-// scroll the sidebar viewport to the focused thread.
-func (m *Model) FocusedThreadLineOffset() int {
-	t, ok := m.focusedThread()
-	if !ok {
-		return 0
-	}
-	if m.threadLineOffsets == nil {
-		return 0
-	}
-	return m.threadLineOffsets[t.Id]
-}
-
 // SetViewportHeight records the sidebar viewport's content height so
-// renderActivity can size its above/below padding: the reply bottom-align
-// and the n/N top-anchor. Called by the parent from syncSidebar before
-// every render (and from openSidebarForReply).
+// SyncActivity can size the list and detail panes to exactly fill it.
+// Called by the parent from syncSidebar before every render.
 func (m *Model) SetViewportHeight(h int) {
 	m.viewportHeight = h
 }
 
-// FocusedThreadEndLine returns the line just past the focused thread
-// block's last rendered line — including the inline reply input when
-// reply mode is on. Used to bottom-align the input in the viewport so
-// the input sits at the screen's bottom and the tail of the thread
-// fills the space above it.
-func (m *Model) FocusedThreadEndLine() int {
-	t, ok := m.focusedThread()
-	if !ok {
-		return 0
-	}
-	if m.threadLineEnds == nil {
-		return 0
-	}
-	return m.threadLineEnds[t.Id]
-}
-
 // FocusedThread returns the GraphQL node id and resolved state of the
-// thread under the activity-tab cursor. ok=false when there's no
-// eligible thread (no PR, not enriched, no threads with comments).
-// Used to plumb the id through the prompt-confirmation pipeline and
-// to decide between resolve and unresolve mutations.
+// review thread under the activity-tab list cursor. ok=false when the
+// selected row is not a review thread (no PR, not enriched, or the row is
+// a comment/review). Used to plumb the id through the prompt-confirmation
+// pipeline and to decide between resolve and unresolve mutations.
 func (m *Model) FocusedThread() (id string, isResolved bool, ok bool) {
 	t, found := m.focusedThread()
 	if !found {
@@ -1401,23 +1324,44 @@ func (m *Model) FocusedThread() (id string, isResolved bool, ok bool) {
 	return t.Id, t.IsResolved, true
 }
 
-// MoveThreadCursor advances the activity-tab thread cursor by delta and
-// clamps to the bounds of allThreads(). No-op when there are no
-// threads.
+// MoveThreadCursor advances the activity-tab list selection by delta and
+// clamps to the bounds of activityItems. No-op when the list is empty.
 func (m *Model) MoveThreadCursor(delta int) {
-	threads := m.allThreads()
-	if len(threads) == 0 {
-		m.threadCursorIdx = 0
+	n := len(m.activityItems)
+	if n == 0 {
+		m.activityCursor = 0
 		return
 	}
-	idx := m.threadCursorIdx + delta
+	idx := m.activityCursor + delta
 	if idx < 0 {
 		idx = 0
 	}
-	if idx >= len(threads) {
-		idx = len(threads) - 1
+	if idx >= n {
+		idx = n - 1
 	}
-	m.threadCursorIdx = idx
+	m.activityCursor = idx
+}
+
+// ScrollDetail scrolls the detail pane by delta lines (positive = down).
+// Bound to j/k and PageUp/PageDown on the Activity tab.
+func (m *Model) ScrollDetail(delta int) {
+	switch {
+	case delta > 0:
+		m.activityDetail.ScrollDown(delta)
+	case delta < 0:
+		m.activityDetail.ScrollUp(-delta)
+	}
+}
+
+// ScrollDetailToTop / ScrollDetailToBottom jump the detail pane to its top
+// or bottom. Bound to g / G on the Activity tab; ToBottom is also used when
+// the inline reply editor opens so the input is visible.
+func (m *Model) ScrollDetailToTop() {
+	m.activityDetail.GotoTop()
+}
+
+func (m *Model) ScrollDetailToBottom() {
+	m.activityDetail.GotoBottom()
 }
 
 func (m *Model) repoRef() cmpcontroller.RepoRef {

@@ -5,110 +5,30 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/markdown"
 )
 
-// The Activity tab renders review threads oldest-first, top to bottom
-// (renderActivity sorts every entry by UpdatedAt ascending). The n/N
-// thread cursor has to walk threads in that same order so "next" (n)
-// moves DOWN the page and "previous" (N) moves UP. This regression test
-// pins both halves together: allThreads() ordering AND the rendered line
-// offsets the cursor scrolls to. It guards against the old bug where
-// allThreads() reversed the array (newest-first) while the body rendered
-// oldest-first, so n jumped up and N jumped down.
-func TestThreadCursorDirectionFollowsRenderOrder(t *testing.T) {
-	markdown.InitializeMarkdownStyle(true) // renderActivity renders comment bodies
-	m := newTestModelForAction(t)
-	m.width = 120 // getIndentedContentWidth needs a positive width to render
-
-	mkThread := func(id, path string, updated time.Time) data.ReviewThread {
-		return data.ReviewThread{
-			Id:   id,
-			Path: path,
-			Line: 10,
-			Comments: data.ReviewComments{Nodes: []data.ReviewComment{
-				{
-					Author:    struct{ Login string }{Login: "octocat"},
-					Body:      "comment on " + path,
-					UpdatedAt: updated,
-				},
-			}},
-		}
-	}
-
-	t1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	t2 := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
-	t3 := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
-
-	// Distinct, sortable paths so we can locate each thread in the output.
-	const (
-		pathOldest = "aaa_oldest.go"
-		pathMid    = "bbb_mid.go"
-		pathNewest = "ccc_newest.go"
-	)
-
-	enriched := data.EnrichedPullRequestData{}
-	// Append out of chronological order to prove ordering comes from
-	// UpdatedAt, not from the GraphQL array position.
-	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
-		mkThread("T3", pathNewest, t3),
-		mkThread("T1", pathOldest, t1),
-		mkThread("T2", pathMid, t2),
-	)
-	m.pr.Data.Enriched = enriched
-	m.pr.Data.IsEnriched = true
-
-	// allThreads() must be oldest-first (the rendered top-to-bottom order).
-	threads := m.allThreads()
-	require.Len(t, threads, 3)
-	require.Equal(t, []string{"T1", "T2", "T3"},
-		[]string{threads[0].Id, threads[1].Id, threads[2].Id},
-		"allThreads() should be oldest-first to match the rendered layout")
-
-	// The rendered body must place the threads in that same order.
-	body := m.renderActivity()
-	posOldest := strings.Index(body, pathOldest)
-	posMid := strings.Index(body, pathMid)
-	posNewest := strings.Index(body, pathNewest)
-	require.NotEqual(t, -1, posOldest)
-	require.NotEqual(t, -1, posMid)
-	require.NotEqual(t, -1, posNewest)
-	require.Less(t, posOldest, posMid, "oldest thread should render above mid")
-	require.Less(t, posMid, posNewest, "mid thread should render above newest")
-
-	// Default cursor is the topmost (oldest) thread — visible on entry.
-	require.Equal(t, 0, m.threadCursorIdx)
-	id, _, ok := m.FocusedThread()
-	require.True(t, ok)
-	require.Equal(t, "T1", id)
-
-	// Walking the cursor with "next" (n / +1) must move DOWN the page:
-	// the focused thread's line offset strictly increases each step.
-	var offsets []int
-	for i := 0; i < len(threads); i++ {
-		m.renderActivity() // re-render so offsets reflect the current focus
-		offsets = append(offsets, m.FocusedThreadLineOffset())
-		m.MoveThreadCursor(1)
-	}
-	for i := 1; i < len(offsets); i++ {
-		require.Greater(t, offsets[i], offsets[i-1],
-			"pressing n (next review thread) should move the cursor DOWN the page")
-	}
+// buildActivity puts the model on the Activity tab, gives it a width and a
+// viewport height, and runs SyncActivity so activityItems (and the two
+// panes) are populated the way syncSidebar would populate them in the app.
+func buildActivity(t *testing.T, m *Model) {
+	t.Helper()
+	markdown.InitializeMarkdownStyle(true) // detail bodies render markdown
+	m.GoToActivityTab()
+	m.SetWidth(120)
+	m.SetViewportHeight(40)
+	m.SyncActivity()
 }
 
-// With the bottom scroll-padding in place, the LAST review thread can be
-// scrolled to the same top-anchor row as every other thread. This pins the
-// fix for the old behavior where the viewport clamped YOffset at the
-// document end (maxYOffset = totalLines - height), so the final threads
-// landed progressively lower — "n/N jumps to top, then middle, then bottom".
-func TestLastThreadReachesTopAnchor(t *testing.T) {
-	markdown.InitializeMarkdownStyle(true)
+// The activity list is one unified, oldest-first timeline of review
+// threads, PR comments, and reviews. n (next) moves DOWN the list, so the
+// items must be ordered by UpdatedAt ascending regardless of how the
+// GraphQL arrays came back. This pins that ordering.
+func TestActivityListOrderMatchesTimeline(t *testing.T) {
 	m := newTestModelForAction(t)
-	m.width = 120
 
 	mkThread := func(id, path string, updated time.Time) data.ReviewThread {
 		return data.ReviewThread{
@@ -123,44 +43,177 @@ func TestLastThreadReachesTopAnchor(t *testing.T) {
 		}
 	}
 
-	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	t1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	t3 := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
+
 	enriched := data.EnrichedPullRequestData{}
-	for i := 0; i < 6; i++ {
-		enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
-			mkThread(
-				"T"+string(rune('1'+i)),
-				string(rune('a'+i))+"_thread.go",
-				base.Add(time.Duration(i)*time.Hour),
-			),
-		)
-	}
+	// Append out of chronological order to prove ordering comes from time.
+	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
+		mkThread("T3", "ccc_newest.go", t3),
+		mkThread("T1", "aaa_oldest.go", t1),
+		mkThread("T2", "bbb_mid.go", t2),
+	)
 	m.pr.Data.Enriched = enriched
 	m.pr.Data.IsEnriched = true
 
-	threads := m.allThreads()
-	require.NotEmpty(t, threads)
-	m.threadCursorIdx = len(threads) - 1 // focus the bottom-most thread
+	buildActivity(t, &m)
 
-	// A viewport shorter than the whole conversation, so the last thread
-	// starts below maxYOffset unless we pad the bottom.
-	const vpH = 12
-	m.viewportHeight = vpH
+	require.Len(t, m.activityItems, 3)
+	require.Equal(t, []string{"T1", "T2", "T3"},
+		[]string{m.activityItems[0].threadId, m.activityItems[1].threadId, m.activityItems[2].threadId},
+		"activity items should be oldest-first to match the list layout")
 
-	body := m.renderActivity()
-	total := lipgloss.Height(m.viewHeader()) + lipgloss.Height(body)
-	maxYOffset := total - vpH
+	// Default cursor is the topmost (oldest) item.
+	require.Equal(t, 0, m.activityCursor)
+	id, _, ok := m.FocusedThread()
+	require.True(t, ok)
+	require.Equal(t, "T1", id)
 
-	// n/N scrolls to the thread's start offset; with the bottom padding it
-	// must be reachable (<= maxYOffset) so the header lands at the top row
-	// rather than the viewport clamping it mid-screen.
-	require.LessOrEqual(t, m.FocusedThreadLineOffset(), maxYOffset,
-		"last thread's header must reach the top row (no clamp) thanks to bottom scroll-padding")
+	// n (next) moves DOWN the list to the newer thread.
+	m.MoveThreadCursor(1)
+	id, _, ok = m.FocusedThread()
+	require.True(t, ok)
+	require.Equal(t, "T2", id)
+}
 
-	// Precondition: without the padding the same target WOULD clamp — the
-	// last thread's start really is past the unpadded body's maxYOffset.
-	m.viewportHeight = 0 // disables both paddings in renderActivity
-	unpadded := m.renderActivity()
-	unpaddedMax := lipgloss.Height(m.viewHeader()) + lipgloss.Height(unpadded) - vpH
-	require.Greater(t, m.FocusedThreadLineOffset(), unpaddedMax,
-		"precondition: last thread would clamp without bottom scroll-padding")
+// The list mixes threads with plain PR comments. x/r/R only act on review
+// threads, so FocusedThread must report a thread when a thread row is
+// selected and ok=false when a comment row is selected.
+func TestActivitySelectionMapsToThread(t *testing.T) {
+	m := newTestModelForAction(t)
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	enriched := data.EnrichedPullRequestData{}
+	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
+		data.ReviewThread{
+			Id:   "T1",
+			Path: "file.go",
+			Line: 1,
+			Comments: data.ReviewComments{Nodes: []data.ReviewComment{{
+				Author:    struct{ Login string }{Login: "octocat"},
+				Body:      "thread comment",
+				UpdatedAt: base,
+			}}},
+		},
+	)
+	// A plain PR conversation comment, newer so it sorts below the thread.
+	enriched.Comments.Nodes = append(enriched.Comments.Nodes, data.Comment{
+		Author:    struct{ Login string }{Login: "octocat"},
+		Body:      "just a comment",
+		UpdatedAt: base.Add(time.Hour),
+	})
+	m.pr.Data.Enriched = enriched
+	m.pr.Data.IsEnriched = true
+
+	buildActivity(t, &m)
+
+	require.Len(t, m.activityItems, 2)
+	require.Equal(t, kindThread, m.activityItems[0].kind)
+	require.Equal(t, kindComment, m.activityItems[1].kind)
+
+	// Thread row selected → FocusedThread reports the thread.
+	m.activityCursor = 0
+	id, _, ok := m.FocusedThread()
+	require.True(t, ok)
+	require.Equal(t, "T1", id)
+
+	// Comment row selected → not a thread, so x/r/R no-op.
+	m.activityCursor = 1
+	_, _, ok = m.FocusedThread()
+	require.False(t, ok)
+}
+
+// j/k scroll the detail pane, and that scroll must survive the syncSidebar
+// cycle that runs on every keystroke. syncSidebar calls SetRow (same PR) +
+// SetWidth + SetViewportHeight + SyncActivity; none of those may reset the
+// detail scroll, or j/k would appear to do nothing.
+func TestScrollDetailSurvivesSyncCycle(t *testing.T) {
+	m := newTestModelForAction(t)
+
+	body := strings.Repeat("a line in the comment body\n\n", 60) // tall enough to overflow
+	enriched := data.EnrichedPullRequestData{}
+	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes, data.ReviewThread{
+		Id: "T1", Path: "file.go", Line: 1,
+		Comments: data.ReviewComments{Nodes: []data.ReviewComment{{
+			Author: struct{ Login string }{Login: "octocat"}, Body: body, UpdatedAt: time.Now(),
+		}}},
+	})
+	m.pr.Data.Enriched = enriched
+	m.pr.Data.IsEnriched = true
+
+	buildActivity(t, &m)
+	require.Greater(t, m.activityDetail.TotalLineCount(), m.activityDetail.Height(),
+		"detail must overflow for this test to be meaningful")
+
+	m.ScrollDetail(5)
+	scrolled := m.activityDetail.YOffset()
+	require.Greater(t, scrolled, 0)
+
+	// Simulate one syncSidebar pass for the same PR.
+	m.SetRow(m.pr.Data)
+	m.SetWidth(120)
+	m.SetViewportHeight(40)
+	m.SyncActivity()
+
+	require.Equal(t, scrolled, m.activityDetail.YOffset(),
+		"a same-PR sync cycle must not reset the detail scroll")
+}
+
+// A refresh (auto-tick / enrichment) rebuilds the activity list. When the
+// same item is still selected, the detail scroll must be preserved, not
+// yanked back to the top. This pins that behavior.
+func TestScrollDetailSurvivesRefresh(t *testing.T) {
+	m := newTestModelForAction(t)
+
+	body := strings.Repeat("a line in the comment body\n\n", 60)
+	enriched := data.EnrichedPullRequestData{}
+	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes, data.ReviewThread{
+		Id: "T1", Path: "file.go", Line: 1,
+		Comments: data.ReviewComments{Nodes: []data.ReviewComment{{
+			Author: struct{ Login string }{Login: "octocat"}, Body: body, UpdatedAt: time.Now(),
+		}}},
+	})
+	m.pr.Data.Enriched = enriched
+	m.pr.Data.IsEnriched = true
+
+	buildActivity(t, &m)
+	m.ScrollDetail(5)
+	scrolled := m.activityDetail.YOffset()
+	require.Greater(t, scrolled, 0)
+
+	// A refresh marks the list dirty (as SetEnrichedPR does) and re-syncs.
+	m.activityDirty = true
+	m.SyncActivity()
+
+	require.Equal(t, scrolled, m.activityDetail.YOffset(),
+		"a refresh with the same item selected must preserve the detail scroll")
+}
+
+// Every list row is exactly one line whether or not it is selected. This is
+// the core of the fix: selection must never change a row's height, so
+// scrolling can't reflow the list.
+func TestActivityRowHeightStable(t *testing.T) {
+	m := newTestModelForAction(t)
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	enriched := data.EnrichedPullRequestData{}
+	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
+		data.ReviewThread{
+			Id: "T1", Path: "file.go", Line: 1, IsResolved: true,
+			Comments: data.ReviewComments{Nodes: []data.ReviewComment{{
+				Author: struct{ Login string }{Login: "octocat"}, Body: "x", UpdatedAt: base,
+			}}},
+		},
+	)
+	m.pr.Data.Enriched = enriched
+	m.pr.Data.IsEnriched = true
+
+	buildActivity(t, &m)
+	require.Len(t, m.activityItems, 1)
+
+	unselected := m.styleActivityRow(m.activityItems[0], false, 80)
+	selected := m.styleActivityRow(m.activityItems[0], true, 80)
+	require.Equal(t, 1, len(splitLines(stripANSI(unselected))))
+	require.Equal(t, 1, len(splitLines(stripANSI(selected))))
 }

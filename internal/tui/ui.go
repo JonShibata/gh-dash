@@ -301,20 +301,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case onActivity && key.Matches(msg, keys.PRKeys.NextReviewThread):
-				// n → move thread cursor forward and scroll the focused
-				// thread's header to the top row of the frame. Re-syncs
-				// sidebar content first so the line offsets (and the bottom
-				// scroll-pad) reflect the new cursor, then applies the
-				// scroll. The pad lets even the last threads reach the top
-				// row instead of clamping mid-screen.
+				// n → move the activity list selection down one item. The
+				// list is pinned and the detail pane reloads for the new
+				// selection; nothing reflows, so no scroll math is needed.
 				m.prView.MoveThreadCursor(1)
 				m.syncSidebar()
-				m.sidebar.ScrollToLine(m.prView.FocusedThreadLineOffset())
 				return m, nil
 			case onActivity && key.Matches(msg, keys.PRKeys.PrevReviewThread):
 				m.prView.MoveThreadCursor(-1)
 				m.syncSidebar()
-				m.sidebar.ScrollToLine(m.prView.FocusedThreadLineOffset())
+				return m, nil
+			case onActivity && (key.Matches(msg, m.keys.Up) ||
+				key.Matches(msg, m.keys.Down) ||
+				key.Matches(msg, m.keys.FirstLine) ||
+				key.Matches(msg, m.keys.LastLine) ||
+				key.Matches(msg, m.keys.PageDown) ||
+				key.Matches(msg, m.keys.PageUp)):
+				// On the Activity tab, n/N move the list selection while
+				// these keys all drive the detail pane: g/G jump to its
+				// top/bottom, j/k scroll a line, PageUp/PageDown a chunk.
+				switch {
+				case key.Matches(msg, m.keys.FirstLine):
+					m.prView.ScrollDetailToTop()
+				case key.Matches(msg, m.keys.LastLine):
+					m.prView.ScrollDetailToBottom()
+				case key.Matches(msg, m.keys.Up):
+					m.prView.ScrollDetail(-1)
+				case key.Matches(msg, m.keys.Down):
+					m.prView.ScrollDetail(1)
+				case key.Matches(msg, m.keys.PageUp):
+					m.prView.ScrollDetail(-10)
+				case key.Matches(msg, m.keys.PageDown):
+					m.prView.ScrollDetail(10)
+				}
+				m.syncSidebar()
 				return m, nil
 			case key.Matches(msg, m.keys.Up),
 				key.Matches(msg, m.keys.Down),
@@ -322,22 +342,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				key.Matches(msg, m.keys.LastLine),
 				key.Matches(msg, m.keys.PageDown),
 				key.Matches(msg, m.keys.PageUp):
-				// Apply the scroll first, then on the Activity tab snap
-				// the thread cursor to whatever thread is now at the top
-				// of the viewport. Re-syncs sidebar content only when the
-				// cursor actually changed (avoids needless re-renders on
-				// every j/k press inside a single thread).
+				// Non-Activity tabs: scroll the outer preview viewport.
 				m.sidebar, sidebarCmd = m.sidebar.Update(msg)
-				if onActivity {
-					// Use the viewport's vertical midpoint, not its top
-					// edge, so multiple threads visible on the same
-					// screen can each become focused as the midpoint
-					// crosses their boundaries.
-					mid := m.sidebar.YOffset() + m.sidebar.ViewportHeight()/2
-					if m.prView.SetThreadCursorAtLine(mid) {
-						m.syncSidebar()
-					}
-				}
 				return m, sidebarCmd
 			}
 		}
@@ -1039,12 +1045,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (indicates there's new activity to show)
 			if msg.LatestCommentUrl != "" {
 				m.prView.GoToActivityTab()
+				m.prView.SetViewportHeight(m.sidebar.ViewportHeight())
+				m.prView.SyncActivity()
 				m.sidebar.SetContent(m.prView.View())
 				m.sidebar.ScrollToBottom()
 			} else {
 				// For notifications without comments (new PRs, state changes, etc.)
 				// show the Overview tab without scrolling
 				m.prView.GoToFirstTab()
+				m.prView.SetViewportHeight(m.sidebar.ViewportHeight())
+				m.prView.SyncActivity()
 				m.sidebar.SetContent(m.prView.View())
 			}
 			m.markNotificationAsRead(msg.NotificationId)
@@ -1595,28 +1605,16 @@ func (m *Model) openSidebarForInput(setFunc func(bool) tea.Cmd) tea.Cmd {
 }
 
 // openSidebarForReply opens the review-thread reply input WITHOUT
-// switching to the Overview tab and bottom-aligns the input box in the
-// viewport: the input sits at the screen's bottom and the tail of the
-// focused thread fills the space above it.
-//
-// Mechanism: passes the viewport height to prview before re-rendering,
-// so renderActivity can pad above the focused thread block when the
-// thread is near the document top. After padding, the focused thread's
-// end equals the viewport height (or more), so scroll target = end -
-// vpHeight is non-negative and the input lands at the bottom edge.
+// switching to the Overview tab. The inline editor renders at the bottom
+// of the selected thread's detail pane; SyncActivity pins the detail to
+// its bottom while in reply mode, so the input is always visible. The
+// extra ScrollDetailToBottom is belt-and-suspenders for the first render.
 func (m *Model) openSidebarForReply(setFunc func(bool) tea.Cmd) tea.Cmd {
 	m.sidebar.IsOpen = true
 	cmd := setFunc(true)
 	m.syncMainContentDimensions()
-	vpH := m.sidebar.ViewportHeight()
-	m.prView.SetViewportHeight(vpH)
 	m.syncSidebar()
-	end := m.prView.FocusedThreadEndLine()
-	target := end - vpH
-	if target < 0 {
-		target = 0
-	}
-	m.sidebar.ScrollToLine(target)
+	m.prView.ScrollDetailToBottom()
 	return cmd
 }
 
@@ -1664,6 +1662,8 @@ func (m *Model) syncSidebar() tea.Cmd {
 		// Feed the current viewport height in before rendering so the
 		// Activity tab's bottom scroll-pad (n/N top-anchor) is sized right.
 		m.prView.SetViewportHeight(m.sidebar.ViewportHeight())
+		m.prView.SetViewportHeight(m.sidebar.ViewportHeight())
+		m.prView.SyncActivity()
 		m.sidebar.SetContent(m.prView.View())
 		// Scroll to bottom if in input mode to keep inputbox visible —
 		// EXCEPT for reply-review mode, where the input renders inline
@@ -1693,6 +1693,8 @@ func (m *Model) syncSidebar() tea.Cmd {
 				m.prView.SetSectionId(0)
 				m.prView.SetRow(m.notificationView.GetSubjectPR())
 				m.prView.SetWidth(width)
+				m.prView.SetViewportHeight(m.sidebar.ViewportHeight())
+				m.prView.SyncActivity()
 				m.sidebar.SetContent(m.prView.View())
 				// Scroll to bottom if in input mode to keep inputbox visible
 				if m.prView.IsTextInputBoxFocused() {

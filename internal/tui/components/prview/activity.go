@@ -16,28 +16,66 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/utils"
 )
 
-type RenderedActivity struct {
-	UpdatedAt      time.Time
-	RenderedString string
-	// ThreadId is non-empty when this activity is a review thread.
-	// Used to record the thread's line offset in the final rendered
-	// output so n/N can scroll the focused thread to the top.
-	ThreadId string
+// activityKind tags each row in the unified activity list so the detail
+// pane knows how to render it and so x/r/R can tell whether the selected
+// row is an actionable review thread.
+type activityKind int
+
+const (
+	kindThread activityKind = iota
+	kindComment
+	kindReview
+)
+
+// activityItem is one row in the Activity tab's list pane, plus the fully
+// rendered detail shown when it is selected. Both `row` and `detail` are
+// pre-rendered at the current width so scrolling never re-renders and never
+// changes any block's height (the old focus-reflow bug). Selection styling
+// is applied later in renderActivityList, so `row` here is the base line
+// without the cursor marker.
+type activityItem struct {
+	kind      activityKind
+	updatedAt time.Time
+	// threadId is the GraphQL thread node id, non-empty only for
+	// kindThread rows. x/r/R act on it.
+	threadId string
+	resolved bool
+	outdated bool
+	row      string
+	// detailHeader is the one-line bar pinned to the top of the detail
+	// pane while the body scrolls: for a thread it carries the resolved /
+	// outdated pills and path:line, so the thread's status stays visible no
+	// matter how far you scroll. For comments/reviews it carries the author
+	// and time.
+	detailHeader string
+	// detail is the scrollable body shown below the pinned header.
+	detail string
 }
 
-func (m *Model) renderActivity() string {
-	bodyStyle := lipgloss.NewStyle()
-
-	var activities []RenderedActivity
-	var comments []comment
-
-	if !m.pr.Data.IsEnriched {
-		return bodyStyle.Render("Loading...")
+// key returns a stable identity for an item, used to tell "the selection
+// changed" (reset the detail scroll to top) apart from "the same item was
+// re-rendered by a refresh" (keep the scroll where it was).
+func (i activityItem) key() string {
+	switch i.kind {
+	case kindThread:
+		return "t:" + i.threadId
+	default:
+		return string(rune('0'+int(i.kind))) + ":" + i.updatedAt.String()
 	}
+}
 
-	// Build a hidden-author lookup once. Empty when not configured, in
-	// which case isHidden is a constant-false closure and the filter is a
-	// no-op — no per-comment map allocation or lookup overhead.
+// buildActivityItems flattens every activity entry (review threads, PR
+// conversation comments, review summaries) into one time-ordered list.
+// Each item carries its one-line list row and its full detail render.
+// Mirrors the old renderActivity aggregation, but produces stable,
+// focus-independent output.
+func (m *Model) buildActivityItems() []activityItem {
+	if m.pr == nil || m.pr.Data == nil || !m.pr.Data.IsEnriched {
+		return nil
+	}
+	width := m.getIndentedContentWidth()
+
+	// Hidden-author lookup (empty = no-op filter).
 	hidden := make(map[string]struct{}, len(m.ctx.Config.Defaults.HideAuthors))
 	for _, login := range m.ctx.Config.Defaults.HideAuthors {
 		hidden[login] = struct{}{}
@@ -50,14 +88,8 @@ func (m *Model) renderActivity() string {
 		return ok
 	}
 
-	// Render review threads as grouped blocks (root + indented replies +
-	// diff-hunk header) rather than as flat per-comment entries. Sorting
-	// is by the *root* comment's UpdatedAt so a late reply doesn't reorder
-	// the whole thread.
-	focusedId := ""
-	if t, ok := m.focusedThread(); ok {
-		focusedId = t.Id
-	}
+	var items []activityItem
+
 	for _, thread := range m.pr.Data.Enriched.ReviewThreads.Nodes {
 		visible := make([]data.ReviewComment, 0, len(thread.Comments.Nodes))
 		for _, c := range thread.Comments.Nodes {
@@ -69,15 +101,20 @@ func (m *Model) renderActivity() string {
 		if len(visible) == 0 {
 			continue
 		}
-		focused := focusedId != "" && thread.Id == focusedId
-		rendered, err := m.renderReviewThread(thread.Path, thread.Line, thread.IsResolved, thread.IsOutdated, focused, visible)
+		body, err := m.renderThreadBody(thread.IsResolved, thread.IsOutdated, visible)
 		if err != nil {
 			continue
 		}
-		activities = append(activities, RenderedActivity{
-			UpdatedAt:      visible[0].UpdatedAt,
-			RenderedString: rendered,
-			ThreadId:       thread.Id,
+		header := m.renderThreadHeader(thread.Path, thread.Line, thread.IsResolved, thread.IsOutdated, width)
+		items = append(items, activityItem{
+			kind:         kindThread,
+			updatedAt:    visible[0].UpdatedAt,
+			threadId:     thread.Id,
+			resolved:     thread.IsResolved,
+			outdated:     thread.IsOutdated,
+			row:          m.renderThreadRow(thread.Path, thread.Line, thread.IsResolved, thread.IsOutdated, visible, width),
+			detailHeader: m.pinBar(header, width),
+			detail:       body,
 		})
 	}
 
@@ -85,21 +122,16 @@ func (m *Model) renderActivity() string {
 		if isHidden(c.Author.Login) {
 			continue
 		}
-		comments = append(comments, comment{
-			Author:    c.Author.Login,
-			Body:      c.Body,
-			UpdatedAt: c.UpdatedAt,
-		})
-	}
-
-	for _, comment := range comments {
-		renderedComment, err := m.renderComment(comment)
+		body, err := m.renderCommentBody(c.Body)
 		if err != nil {
 			continue
 		}
-		activities = append(activities, RenderedActivity{
-			UpdatedAt:      comment.UpdatedAt,
-			RenderedString: renderedComment,
+		items = append(items, activityItem{
+			kind:         kindComment,
+			updatedAt:    c.UpdatedAt,
+			row:          m.renderCommentRow(c.Author.Login, c.Body, c.UpdatedAt, width),
+			detailHeader: m.pinBar(m.commentHeaderLine(c.Author.Login, c.UpdatedAt), width),
+			detail:       body,
 		})
 	}
 
@@ -107,225 +139,331 @@ func (m *Model) renderActivity() string {
 		if isHidden(review.Author.Login) {
 			continue
 		}
-		renderedReview, err := m.renderReview(review)
+		body, err := m.renderReviewBody(review)
 		if err != nil {
 			continue
 		}
-		activities = append(activities, RenderedActivity{
-			UpdatedAt:      review.UpdatedAt,
-			RenderedString: renderedReview,
+		items = append(items, activityItem{
+			kind:         kindReview,
+			updatedAt:    review.UpdatedAt,
+			row:          m.renderReviewRow(review, width),
+			detailHeader: m.pinBar(m.renderReviewHeader(review), width),
+			detail:       body,
 		})
 	}
 
-	sort.Slice(activities, func(i, j int) bool {
-		return activities[i].UpdatedAt.Before(activities[j].UpdatedAt)
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].updatedAt.Before(items[j].updatedAt)
 	})
+	return items
+}
 
-	body := ""
-	// Reset the offset maps every render IN PLACE. View() is a value
-	// receiver; assigning a new map (`m.threadLineOffsets = map{}`)
-	// would only update the local copy and the parent's offsets would
-	// stay empty. Maps are reference types, so deletions persist.
-	for k := range m.threadLineOffsets {
-		delete(m.threadLineOffsets, k)
+// SyncActivity rebuilds the activity items (when dirty), sizes the two
+// panes to exactly fill the sidebar viewport, and loads content into them.
+// It is a pointer method called from the parent's syncSidebar before
+// View(), because View() is a value receiver and cannot persist the inner
+// viewports' state.
+func (m *Model) SyncActivity() {
+	if !m.hasData() || !m.pr.Data.IsEnriched {
+		return
 	}
-	for k := range m.threadLineEnds {
-		delete(m.threadLineEnds, k)
+	if m.carousel.SelectedItem() != ActivityTab {
+		return
 	}
-	if len(activities) == 0 {
-		body = renderEmptyState()
-	} else {
-		title := m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(
-			fmt.Sprintf("%s  %d comments", constants.CommentsIcon, len(activities)))
-		// Fold the thread action bar into `title` so the existing
-		// `cum += lipgloss.Height(title)` below already accounts for its
-		// height — the n/N scroll-follow line offsets stay correct
-		// without touching the offset loop.
-		if bar := m.renderThreadActionBar(); bar != "" {
-			title = lipgloss.JoinVertical(lipgloss.Left, title, bar, "")
-		}
-		// Offsets must be in *viewport* coordinates: View() prepends
-		// viewHeader() before the tab body, and YOffset() measures the
-		// full output. Without this adjustment the cursor-follow logic
-		// would compare a viewport offset (with header) against a
-		// body-relative offset (without) and never match anything past
-		// the first thread.
-		cum := lipgloss.Height(m.viewHeader()) + lipgloss.Height(title)
-		// In reply mode, pad above the focused thread block so its end
-		// lands at (or below) the viewport's bottom edge. Without this,
-		// when the focused thread is near the document top, the viewport
-		// can't scroll high enough to put the input at the bottom (X
-		// would have to be negative) and the input renders in the upper
-		// half of the screen with blank space below.
-		inReplyMode := m.editor.Mode() == cmpcontroller.ModeReplyReview
-		focusedId := ""
-		if inReplyMode {
-			if t, ok := m.focusedThread(); ok {
-				focusedId = t.Id
-			}
-		}
-		var renderedActivities []string
-		maxThreadOffset := -1 // start offset of the last (bottom-most) thread
-		for _, activity := range activities {
-			rendered := activity.RenderedString
-			padBefore := 0
-			if focusedId != "" && activity.ThreadId == focusedId && m.viewportHeight > 0 {
-				naturalEnd := cum + lipgloss.Height(rendered)
-				if naturalEnd < m.viewportHeight {
-					padBefore = m.viewportHeight - naturalEnd
-					rendered = strings.Repeat("\n", padBefore) + rendered
-				}
-			}
-			cum += padBefore
-			if activity.ThreadId != "" {
-				m.threadLineOffsets[activity.ThreadId] = cum
-				maxThreadOffset = cum // threads render top-to-bottom, so this ends on the last one
-			}
-			renderedActivities = append(renderedActivities, rendered)
-			cum += lipgloss.Height(activity.RenderedString)
-			if activity.ThreadId != "" {
-				m.threadLineEnds[activity.ThreadId] = cum
-			}
-		}
-		body = lipgloss.JoinVertical(lipgloss.Left, renderedActivities...)
-		// Bottom scroll-padding (the n/N top-anchor): reserve enough trailing
-		// blank lines that the LAST review thread can still scroll up to the
-		// top row of the frame. Without it the viewport clamps YOffset at
-		// maxYOffset = totalLines - height near the document end, so the
-		// final threads land progressively lower — the "n/N jumps to top,
-		// then middle, then bottom" this removes. Only threads are n/N
-		// targets, so pad relative to the last thread's start, not the last
-		// activity. cum is the full content height (viewHeader + title +
-		// activities) at this point.
-		if maxThreadOffset >= 0 && m.viewportHeight > 0 {
-			linesBelowLastThread := cum - maxThreadOffset
-			if pad := m.viewportHeight - linesBelowLastThread; pad > 0 {
-				body += strings.Repeat("\n", pad)
-			}
-		}
-		body = lipgloss.JoinVertical(lipgloss.Left, title, body)
+	rebuilt := false
+	if m.activityDirty {
+		m.activityItems = m.buildActivityItems()
+		m.activityDirty = false
+		rebuilt = true
+	}
+	if m.activityCursor >= len(m.activityItems) {
+		m.activityCursor = max(0, len(m.activityItems)-1)
+	}
+	if m.activityCursor < 0 {
+		m.activityCursor = 0
+	}
+	if m.viewportHeight <= 0 || len(m.activityItems) == 0 {
+		return
 	}
 
-	return bodyStyle.Render(body)
+	sel, ok := m.selectedActivity()
+	if !ok {
+		m.activityDetail.SetContent("")
+		m.loadedDetailKey = ""
+		return
+	}
+
+	w := m.getIndentedContentWidth()
+	hHeader := lipgloss.Height(m.viewHeader())
+	hAhead := lipgloss.Height(m.renderActivityHeader(w))
+	hPinned := lipgloss.Height(sel.detailHeader)
+	const hDivider = 1
+	// Budget shared by the list pane and the (scrollable) detail body,
+	// after the fixed chrome: PR header, legend, divider, pinned status bar.
+	avail := m.viewportHeight - hHeader - hAhead - hDivider - hPinned
+	if avail < 2 {
+		avail = 2
+	}
+
+	// List pane gets up to half the space, capped at 8 rows, at least 2.
+	maxList := avail / 2
+	if maxList > 8 {
+		maxList = 8
+	}
+	if maxList < 2 {
+		maxList = 2
+	}
+	listH := len(m.activityItems)
+	if listH > maxList {
+		listH = maxList
+	}
+	if listH < 1 {
+		listH = 1
+	}
+	detailH := avail - listH
+	if detailH < 1 {
+		detailH = 1
+	}
+
+	m.activityList.SetWidth(w)
+	m.activityList.SetHeight(listH)
+	m.activityList.SetContent(m.renderActivityList(w))
+	m.activityList.EnsureVisible(m.activityCursor, 0, 0)
+
+	m.activityDetail.SetWidth(w)
+	m.activityDetail.SetHeight(detailH)
+
+	// In reply mode the inline editor rides at the bottom of the detail
+	// pane; keep it pinned to the bottom and always refresh so it tracks
+	// what the user types.
+	if m.editor.Mode() == cmpcontroller.ModeReplyReview {
+		m.activityDetail.SetContent(sel.detail + "\n" + m.EditorReplyView())
+		m.activityDetail.GotoBottom()
+		m.loadedDetailKey = "reply"
+		return
+	}
+
+	key := sel.key()
+	switch {
+	case key != m.loadedDetailKey:
+		// Selection changed (or first load / just left reply mode): show
+		// the new item from the top.
+		m.activityDetail.SetContent(sel.detail)
+		m.activityDetail.GotoTop()
+		m.loadedDetailKey = key
+	case rebuilt:
+		// Same item still selected but its data was refreshed (auto-tick,
+		// enrichment, resolve). Update the body but keep the scroll where
+		// the user left it, clamped to the new content length, so a refresh
+		// doesn't yank the pane back to the top.
+		off := m.activityDetail.YOffset()
+		m.activityDetail.SetContent(sel.detail)
+		maxOff := max(0, m.activityDetail.TotalLineCount()-detailH)
+		if off > maxOff {
+			off = maxOff
+		}
+		m.activityDetail.SetYOffset(off)
+	}
+	// else: same item, no rebuild — leave content and scroll untouched.
+}
+
+// viewActivity composes the Activity tab: the PR header, a fixed legend
+// line, the pinned list pane, a divider, and the scrollable detail pane.
+// Sized to exactly the sidebar viewport height so the outer viewport does
+// not scroll (all scrolling lives in the two inner panes). Value receiver:
+// it only reads the panes that SyncActivity populated.
+func (m Model) viewActivity() string {
+	pad := lipgloss.NewStyle().Padding(0, m.ctx.Styles.Sidebar.ContentPadding)
+
+	if !m.pr.Data.IsEnriched {
+		return lipgloss.JoinVertical(lipgloss.Left, m.viewHeader(), pad.Render("Loading..."))
+	}
+
+	w := m.getIndentedContentWidth()
+	if len(m.activityItems) == 0 {
+		body := lipgloss.JoinVertical(lipgloss.Left, m.renderActivityHeader(w), "", renderEmptyState())
+		return lipgloss.JoinVertical(lipgloss.Left, m.viewHeader(), pad.Render(body))
+	}
+
+	divider := lipgloss.NewStyle().
+		Foreground(m.ctx.Theme.FaintBorder).
+		Render(strings.Repeat("─", max(1, w)))
+
+	// The selected item's status bar (thread pills + path:line, or the
+	// author/time for comments/reviews) is pinned above the scrolling body
+	// so it stays visible no matter how far the detail is scrolled.
+	pinned := ""
+	if sel, ok := m.selectedActivity(); ok {
+		pinned = sel.detailHeader
+	}
+
+	body := lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.renderActivityHeader(w),
+		m.activityList.View(),
+		divider,
+		pinned,
+		m.activityDetail.View(),
+	)
+	out := lipgloss.JoinVertical(lipgloss.Left, m.viewHeader(), pad.Render(body))
+	if m.viewportHeight > 0 {
+		// Insurance against an off-by-one that would make the outer
+		// viewport scrollable and reintroduce a stray shift.
+		out = lipgloss.NewStyle().MaxHeight(m.viewportHeight).Render(out)
+	}
+	return out
 }
 
 func renderEmptyState() string {
 	return lipgloss.NewStyle().Italic(true).Render("No comments...")
 }
 
-// renderThreadActionBar renders a single, fixed-height line that names the
-// currently-selected review thread (index/count, path:line, resolved
-// state) and the actions available on it. It removes the ambiguity of
-// "which thread does x/r/R act on?" by stating it explicitly above the
-// conversation. Empty when there are no review threads.
-func (m *Model) renderThreadActionBar() string {
-	idx, count, ok := m.focusedThreadPosition()
-	if !ok {
-		return ""
-	}
-	t, ok := m.focusedThread()
-	if !ok {
-		return ""
-	}
-
-	state := "unresolved"
-	if t.IsResolved {
-		state = "resolved"
-	}
-
+// renderActivityHeader is the fixed legend line above the list pane. It
+// shows the selected item's position and the always-available key legend.
+// Fixed height and content, so it never reflows.
+func (m *Model) renderActivityHeader(width int) string {
 	accent := lipgloss.NewStyle().Foreground(m.ctx.Theme.PrimaryText).Bold(true)
 	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
 
-	// Identity only: which thread is selected and its state. The key
-	// legend lives inline beneath the focused thread (renderThreadHints)
-	// so it stays visible when the user has scrolled past this bar.
-	bar := lipgloss.JoinHorizontal(
+	count := len(m.activityItems)
+	pos := 0
+	if count > 0 {
+		pos = m.activityCursor + 1
+	}
+	legend := " · n/N select · j/k/g/G scroll · x resolve · r reply · R reply+resolve"
+	line := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		accent.Render(fmt.Sprintf("▶ %d/%d", idx+1, count)),
-		faint.Render(fmt.Sprintf(" · %s:%d · %s", t.Path, t.Line, state)),
+		accent.Render(fmt.Sprintf("%s %d/%d", constants.CommentsIcon, pos, count)),
+		faint.Render(legend),
 	)
-	return lipgloss.NewStyle().Width(m.getIndentedContentWidth()).MaxHeight(1).Render(bar)
+	return lipgloss.NewStyle().Width(width).MaxHeight(1).Render(
+		ansi.Truncate(line, width, constants.Ellipsis),
+	)
 }
 
-// renderThreadHints renders the always-visible key legend shown beneath
-// the focused thread, so the available actions stay reachable without
-// scrolling back to the top-of-tab action bar.
-func (m *Model) renderThreadHints(resolved bool, width int) string {
-	action := "x resolve"
-	if resolved {
-		action = "x unresolve"
+// renderActivityList joins the item rows for the list viewport, applying
+// the selection marker + emphasis to the cursor row. Every row is exactly
+// one line, selected or not, so selection never changes layout.
+func (m *Model) renderActivityList(width int) string {
+	lines := make([]string, 0, len(m.activityItems))
+	for i, item := range m.activityItems {
+		lines = append(lines, m.styleActivityRow(item, i == m.activityCursor, width))
 	}
-	// Sit the legend on the same active-bg band as the active header so
-	// the two bracket the active comment. SecondaryText (not FaintText) so
-	// it stays legible against the band.
-	return lipgloss.NewStyle().
-		Foreground(m.ctx.Theme.SecondaryText).
-		Background(m.ctx.Theme.ActiveBackground).
-		Width(width).
-		MaxHeight(1).
-		Render("  n/N prev/next · r reply · R reply+resolve · " + action)
+	return strings.Join(lines, "\n")
 }
 
-type comment struct {
-	Author    string
-	UpdatedAt time.Time
-	Body      string
-	Path      *string
-	Line      *int
-}
-
-func (m *Model) renderComment(
-	comment comment,
-) (string, error) {
-	width := m.getIndentedContentWidth()
-	authorAndTime := lipgloss.NewStyle().
-		Width(width).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(m.ctx.Theme.FaintBorder).Render(
-		lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			m.ctx.Styles.Common.MainTextStyle.Render(comment.Author),
-			" ",
-			lipgloss.NewStyle().
-				Foreground(m.ctx.Theme.FaintText).
-				Render(utils.TimeElapsed(comment.UpdatedAt)),
-		))
-
-	var header string
-	if comment.Path != nil && comment.Line != nil {
-		filePath := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).Width(width).Render(
-			fmt.Sprintf(
-				"%s#l%d",
-				*comment.Path,
-				*comment.Line,
-			),
-		)
-		header = lipgloss.JoinVertical(lipgloss.Left, authorAndTime, filePath, "")
-	} else {
-		header = authorAndTime
+// styleActivityRow prepends the cursor marker and applies emphasis. The
+// selected row is bold/primary; resolved and outdated rows are dimmed. No
+// background band is used, so a colored state glyph inside the row can't
+// punch a hole in a fill (and the row height stays 1).
+func (m *Model) styleActivityRow(item activityItem, selected bool, width int) string {
+	marker := "  "
+	base := lipgloss.NewStyle()
+	switch {
+	case selected:
+		marker = "▸ "
+		base = base.Bold(true).Foreground(m.ctx.Theme.PrimaryText)
+	case item.resolved || item.outdated:
+		base = base.Foreground(m.ctx.Theme.FaintText)
 	}
+	line := ansi.Truncate(marker+item.row, width, constants.Ellipsis)
+	return base.MaxHeight(1).Render(line)
+}
 
-	body := lineCleanupRegex.ReplaceAllString(comment.Body, "")
+// stateGlyph is the compact leading glyph for a thread row.
+func (m *Model) stateGlyph(resolved, outdated bool) string {
+	switch {
+	case resolved:
+		return lipgloss.NewStyle().Foreground(m.ctx.Theme.SuccessText).Render("✓")
+	case outdated:
+		return lipgloss.NewStyle().Foreground(m.ctx.Theme.WarningText).Render("⚠")
+	default:
+		return lipgloss.NewStyle().Foreground(m.ctx.Theme.SecondaryText).Render("○")
+	}
+}
+
+func (m *Model) renderThreadRow(path string, line int, resolved, outdated bool, comments []data.ReviewComment, width int) string {
+	author := ""
+	if len(comments) > 0 {
+		author = comments[0].Author.Login
+	}
+	pathLine := fmt.Sprintf("%s:%d", path, line)
+	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
+	row := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		m.stateGlyph(resolved, outdated),
+		" ",
+		pathLine,
+		faint.Render(fmt.Sprintf("  @%s · %d", author, len(comments))),
+	)
+	return row
+}
+
+func (m *Model) renderCommentRow(author, body string, updated time.Time, width int) string {
+	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
+	snippet := firstLine(body)
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		lipgloss.NewStyle().Foreground(m.ctx.Theme.SecondaryText).Render(constants.CommentsIcon),
+		" @",
+		author,
+		faint.Render(" · "+utils.TimeElapsed(updated)+" · "+snippet),
+	)
+}
+
+func (m *Model) renderReviewRow(review data.Review, width int) string {
+	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		m.renderReviewDecision(review.State),
+		" @",
+		review.Author.Login,
+		faint.Render(" reviewed · "+utils.TimeElapsed(review.UpdatedAt)),
+	)
+}
+
+// firstLine returns the first non-empty, cleaned-up line of a body for use
+// as a one-line list snippet.
+func firstLine(body string) string {
+	body = lineCleanupRegex.ReplaceAllString(body, "")
+	for _, l := range strings.Split(body, "\n") {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			return l
+		}
+	}
+	return ""
+}
+
+// pinBar formats a one-line status bar for the pinned top of the detail
+// pane: filled to the pane width and clamped to a single line.
+func (m *Model) pinBar(content string, width int) string {
+	return lipgloss.NewStyle().Width(width).MaxHeight(1).Render(
+		ansi.Truncate(content, width, constants.Ellipsis),
+	)
+}
+
+// commentHeaderLine is the pinned bar for a PR conversation comment.
+func (m *Model) commentHeaderLine(author string, updated time.Time) string {
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		lipgloss.NewStyle().Foreground(m.ctx.Theme.SecondaryText).Render(constants.CommentsIcon),
+		" ",
+		m.ctx.Styles.Common.MainTextStyle.Render(author),
+		lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).Render(" · "+utils.TimeElapsed(updated)),
+	)
+}
+
+// renderCommentBody is the scrollable body for a PR conversation comment.
+func (m *Model) renderCommentBody(body string) (string, error) {
+	body = lineCleanupRegex.ReplaceAllString(body, "")
 	body = m.injectHints(body)
-	body, err := markdown.Render(width, body)
-
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		header,
-		body,
-	), err
+	return markdown.Render(m.getIndentedContentWidth(), body)
 }
 
-func (m *Model) renderReview(
-	review data.Review,
-) (string, error) {
-	header := m.renderReviewHeader(review)
-	body, err := markdown.Render(m.getIndentedContentWidth(), m.injectHints(review.Body))
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		header,
-		body,
-	), err
+// renderReviewBody is the scrollable body for a review summary.
+func (m *Model) renderReviewBody(review data.Review) (string, error) {
+	return markdown.Render(m.getIndentedContentWidth(), m.injectHints(review.Body))
 }
 
 func (m *Model) renderReviewHeader(review data.Review) string {
@@ -339,39 +477,13 @@ func (m *Model) renderReviewHeader(review data.Review) string {
 	)
 }
 
-// renderThreadHeader builds the one-line location header shared by a
-// thread's collapsed and expanded views, keeping the two consistent: the
-// only thing that changes on focus/expand is the disclosure triangle and
-// whether the body follows — the header itself stays put.
-//
-// State pills are LEFT-anchored. That fixes two things at once: they no
-// longer teleport from the right edge (expanded) to the left (collapsed),
-// and a long path can never push them off-screen — the path is the only
-// element that gives way. Both resolved and outdated render in both
-// states, so an outdated thread still reads as outdated while collapsed.
-//
-// The path:line is left-truncated to whatever width the pills (and, for
-// the collapsed view, the caller-reserved count suffix) leave, dropping
-// leading directories so the filename + line number — what you navigate
-// by — always survive.
-func (m *Model) renderThreadHeader(path string, line int, resolved, outdated, focused, expanded bool, width int) string {
-	// The active (focused) thread sits on a full-width band painted with
-	// Theme.ActiveBackground — a color dedicated to "active comment",
-	// deliberately distinct from SelectedBackground (used for selected
-	// line numbers / list rows) so the two don't read as the same thing.
-	// Each text segment carries the background explicitly so a nested ANSI
-	// reset can't punch a hole between the pills; the outer Width fill then
-	// extends the band to the right edge.
-	base := lipgloss.NewStyle()
-	sep := " "
-	if focused {
-		base = base.Background(m.ctx.Theme.ActiveBackground)
-		sep = base.Render(" ")
-	}
-
-	// State pills reuse the same themed badge treatment as the check
-	// badges (checks.go): a semantic background + inverted text. Resolved
-	// is the "pass" green; outdated is the "pending" warning amber.
+// renderThreadHeader builds the one-line location header shown at the top
+// of a thread's detail: state pills (left-anchored) followed by the
+// path:line. The path is left-truncated to whatever the pills leave, so the
+// filename + line number (what you navigate by) always survive. Selection
+// is indicated in the list pane, so this header carries no focus state and
+// never changes height.
+func (m *Model) renderThreadHeader(path string, line int, resolved, outdated bool, width int) string {
 	resolvedPill := lipgloss.NewStyle().
 		Foreground(m.ctx.Theme.InvertedText).
 		Background(m.ctx.Theme.SuccessText).
@@ -383,67 +495,35 @@ func (m *Model) renderThreadHeader(path string, line int, resolved, outdated, fo
 
 	var parts []string
 	if resolved {
-		parts = append(parts, resolvedPill.Render("✓ resolved"), sep)
+		parts = append(parts, resolvedPill.Render("✓ resolved"), " ")
 	}
 	if outdated {
-		parts = append(parts, outdatedPill.Render("outdated"), sep)
+		parts = append(parts, outdatedPill.Render("outdated"), " ")
 	}
 	pills := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 
-	// Disclosure triangle encodes body state; focus is carried by the
-	// gutter accent + bold path (+ the active band), so the marker is
-	// free to mean expanded.
-	marker := "▸ "
-	if expanded {
-		marker = "▾ "
-	}
-	headerStyle := base.Foreground(m.ctx.Theme.FaintText)
-	if focused {
-		headerStyle = base.Foreground(m.ctx.Theme.PrimaryText).Bold(true)
-	}
+	headerStyle := lipgloss.NewStyle().Foreground(m.ctx.Theme.PrimaryText).Bold(true)
 
 	pathLine := fmt.Sprintf("%s:%d", path, line)
-	budget := width - lipgloss.Width(pills) - lipgloss.Width(marker)
+	budget := width - lipgloss.Width(pills)
 	if budget < 1 {
 		budget = 1
 	}
 	if lipgloss.Width(pathLine) > budget {
-		// Keep the tail (…dir/file.go:NN); drop leading directories. The
-		// ellipsis takes one column, so leave room for it in the budget.
 		pathLine = constants.Ellipsis + ansi.TruncateLeft(pathLine, lipgloss.Width(pathLine)-budget+1, "")
 	}
 
-	header := lipgloss.JoinHorizontal(lipgloss.Top, pills, headerStyle.Render(marker+pathLine))
-	if focused {
-		// Pad the band to the full width so the fill reaches the right edge.
-		header = base.Width(width).MaxHeight(1).Render(header)
-	}
-	return header
+	return lipgloss.JoinHorizontal(lipgloss.Top, pills, headerStyle.Render(pathLine))
 }
 
-// renderReviewThread renders one inline-review thread as a grouped block
-// with a state-colored left gutter: a location header (path:line, plus
-// [resolved]/[outdated] tags), the colorized diff hunk above the
-// conversation, then the root comment followed by replies indented by a
-// leading bar. Replies share a single header style so the visual
-// grouping reads as one unit even when authors differ.
-//
-// The left gutter encodes state at a glance — focused (accent), outdated
-// (warning), resolved (faint), or default — and makes the *selected*
-// thread (the one x/r/R act on) unmistakable. Inner content is rendered
-// 2 columns narrower so the gutter+padding leaves the outer width equal
-// to a non-focused block; keeping outer width invariant is what lets the
-// n/N scroll-follow line offsets stay stable across focus changes.
-//
-// Resolved threads collapse to a single summary line unless focused, so
-// closed-out conversations stop eating vertical space. Focusing one (via
-// n/N) expands it again so x can unresolve.
-func (m *Model) renderReviewThread(
-	path string,
-	line int,
+// renderThreadBody renders the scrollable part of a review thread's detail:
+// a state-colored left gutter wrapping the colorized diff hunk followed by
+// the root comment and its replies (indented by a leading bar). The
+// resolved/outdated pills and location live in the pinned header
+// (renderThreadHeader), not here, so they stay visible while this scrolls.
+func (m *Model) renderThreadBody(
 	resolved bool,
 	outdated bool,
-	focused bool,
 	comments []data.ReviewComment,
 ) (string, error) {
 	width := m.getIndentedContentWidth()
@@ -453,49 +533,24 @@ func (m *Model) renderReviewThread(
 	}
 	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
 
-	// Left gutter color encodes thread state; focused wins so the
-	// selected thread reads as a brighter version of the same gutter.
+	// Left gutter color encodes thread state.
 	gutterColor := m.ctx.Theme.FaintBorder
 	switch {
-	case focused:
-		gutterColor = m.ctx.Theme.PrimaryText
 	case outdated:
 		gutterColor = m.ctx.Theme.WarningText
 	case resolved:
-		gutterColor = m.ctx.Theme.FaintText
+		gutterColor = m.ctx.Theme.SuccessText
 	}
 	gutter := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), false, false, false, true).
 		BorderForeground(gutterColor).
 		PaddingLeft(1)
 
-	// Collapsed summary for resolved, non-focused threads. One line →
-	// the caller's height/offset bookkeeping is unaffected. Shares the
-	// header builder with the expanded view so the two stay consistent;
-	// only the trailing comment count is collapsed-specific. The count's
-	// width is reserved up front so the path truncates around it.
-	if resolved && !focused {
-		n := len(comments)
-		noun := "comments"
-		if n == 1 {
-			noun = "comment"
-		}
-		countSuffix := fmt.Sprintf(" · %d %s", n, noun)
-		header := m.renderThreadHeader(path, line, resolved, outdated, focused, false, innerWidth-lipgloss.Width(countSuffix))
-		summary := lipgloss.JoinHorizontal(lipgloss.Top, header, faint.Render(countSuffix))
-		return gutter.Render(summary), nil
-	}
-
-	header := m.renderThreadHeader(path, line, resolved, outdated, focused, true, innerWidth)
-
-	// Diff hunk lifted from the *root* comment — every comment in the
-	// thread carries the same hunk; render it once, colorized like a
-	// real diff (background-filled rows), above the conversation.
+	// Diff hunk lifted from the root comment (every comment in the thread
+	// carries the same hunk); render it once, colorized, above the
+	// conversation.
 	hunk := colorizeDiffHunk(comments[0].DiffHunk, innerWidth, &m.ctx.Theme)
 
-	// Root comment uses the existing renderComment shape (with header
-	// trimmed because we already drew the location above). Replies use a
-	// lighter ├─ rule so the indentation reads as continuation.
 	var blocks []string
 	if hunk != "" {
 		blocks = append(blocks, hunk)
@@ -520,26 +575,25 @@ func (m *Model) renderReviewThread(
 		blocks = append(blocks, who, rendered)
 	}
 
-	all := append([]string{header}, blocks...)
-	// Inline key legend beneath the focused thread — always visible next
-	// to the conversation x/r/R act on, even when scrolled past the
-	// top-of-tab action bar. Suppressed while the reply editor is open
-	// (the editor takes its place).
-	if focused && m.EditorReplyView() == "" {
-		all = append(all, m.renderThreadHints(resolved, innerWidth))
-	}
-	conv := gutter.Render(lipgloss.JoinVertical(lipgloss.Left, all...))
+	return gutter.Render(lipgloss.JoinVertical(lipgloss.Left, blocks...)), nil
+}
 
-	// The inline reply input renders below the conversation when active.
-	// It's kept OUTSIDE the gutter wrapper because the editor is styled
-	// at the full sidebar width; wrapping it would overflow the gutter
-	// padding and reflow.
-	if focused {
-		if reply := m.EditorReplyView(); reply != "" {
-			return lipgloss.JoinVertical(lipgloss.Left, conv, reply), nil
-		}
+// renderReviewThread is the pinned header stacked on the scrollable body,
+// i.e. the whole thread detail as one string. Retained for tests; the app
+// renders the header (pinned) and body (scrollable) separately.
+func (m *Model) renderReviewThread(
+	path string,
+	line int,
+	resolved bool,
+	outdated bool,
+	comments []data.ReviewComment,
+) (string, error) {
+	body, err := m.renderThreadBody(resolved, outdated, comments)
+	if err != nil {
+		return "", err
 	}
-	return conv, nil
+	header := m.renderThreadHeader(path, line, resolved, outdated, m.getIndentedContentWidth())
+	return lipgloss.JoinVertical(lipgloss.Left, header, body), nil
 }
 
 func (m *Model) renderReviewDecision(decision string) string {

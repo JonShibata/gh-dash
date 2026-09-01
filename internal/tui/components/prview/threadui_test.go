@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
@@ -20,8 +19,8 @@ func init() {
 }
 
 // thread builds a minimal review thread with a single root comment so it
-// survives allThreads() (which drops zero-comment threads and sorts by the
-// root comment's UpdatedAt).
+// survives buildActivityItems (which drops zero-comment threads and sorts
+// by the root comment's UpdatedAt).
 func thread(id string, dbID int, resolved bool, updated time.Time) data.ReviewThread {
 	return data.ReviewThread{
 		Id:         id,
@@ -66,140 +65,72 @@ func TestSetThreadResolvedOptimisticFlipsSourceInPlace(t *testing.T) {
 	require.False(t, m.pr.Data.Enriched.ReviewThreads.Nodes[0].IsResolved)
 }
 
-func TestFocusedThreadPosition(t *testing.T) {
-	now := time.Now()
-
-	// No threads → not ok.
-	m0 := newTestModelForAction(t)
-	_, _, ok := m0.focusedThreadPosition()
-	require.False(t, ok)
-
-	m := modelWithThreads(t,
-		thread("t1", 11, false, now.Add(-2*time.Minute)),
-		thread("t2", 22, false, now.Add(-1*time.Minute)),
-	)
-	idx, count, ok := m.focusedThreadPosition()
-	require.True(t, ok)
-	require.Equal(t, 0, idx)
-	require.Equal(t, 2, count)
-
-	m.MoveThreadCursor(1)
-	idx, count, _ = m.focusedThreadPosition()
-	require.Equal(t, 1, idx)
-	require.Equal(t, 2, count)
-
-	// Clamps past the end.
-	m.MoveThreadCursor(5)
-	idx, _, _ = m.focusedThreadPosition()
-	require.Equal(t, 1, idx)
-}
-
-// Smoke test the full activity render with a focused resolved thread (it
-// must expand) and an unresolved one, exercising the gutter/width math,
-// collapse logic, and the action bar without panicking.
-func TestRenderActivitySmoke(t *testing.T) {
+// Smoke test the full Activity view with a selected resolved thread and an
+// unresolved one, exercising the pane sizing, list rows, and detail render
+// without panicking. The detail of the selected thread is always fully
+// expanded (no focus-based collapse anymore).
+func TestViewActivitySmoke(t *testing.T) {
 	now := time.Now()
 	m := modelWithThreads(t,
 		thread("t1", 11, false, now.Add(-2*time.Minute)),
 		thread("t2", 22, true, now.Add(-1*time.Minute)),
 	)
-	m.SetWidth(80)
-	m.MoveThreadCursor(1) // focus the resolved thread → it should expand
+	buildActivity(t, &m)
+	m.MoveThreadCursor(1) // select the resolved thread
+	m.SyncActivity()
 
-	out := m.renderActivity()
-	visible := stripANSI(out)
-
+	out := m.viewActivity()
 	require.NotEmpty(t, out)
-	require.Contains(t, visible, "file.go:1")   // header / location
-	require.Contains(t, visible, "reply")       // action bar legend
-	require.Contains(t, visible, "x unresolve") // resolved+focused state
-	require.Contains(t, visible, "2/2")         // action bar position
+	visible := stripANSI(out)
+	require.Contains(t, visible, "file.go:1") // header / location in a row
+	require.Contains(t, visible, "resolve")   // legend line
 }
 
-// A resolved, NON-focused thread collapses to a single summary line.
-func TestResolvedThreadCollapsesWhenNotFocused(t *testing.T) {
+// The selected item's status (resolved pill + location) is pinned in the
+// detail header, and the scrollable body carries the conversation. Resolved
+// threads no longer collapse based on focus, so scrolling can't balloon
+// them.
+func TestResolvedThreadDetailIsExpanded(t *testing.T) {
 	now := time.Now()
-	m := modelWithThreads(t,
-		thread("t1", 11, true, now.Add(-2*time.Minute)),  // resolved, not focused
-		thread("t2", 22, false, now.Add(-1*time.Minute)), // focused (cursor 0 → t1; move to t2)
-	)
-	m.SetWidth(80)
-	m.MoveThreadCursor(1) // focus t2 so t1 stays collapsed
+	m := modelWithThreads(t, thread("t1", 11, true, now))
+	buildActivity(t, &m)
 
-	rendered, err := m.renderReviewThread("file.go", 1, true /*resolved*/, false /*outdated*/, false /*focused*/, m.allThreads()[0].Comments.Nodes)
+	require.Len(t, m.activityItems, 1)
+	// Status pill + location live in the pinned header.
+	header := stripANSI(m.activityItems[0].detailHeader)
+	require.Contains(t, header, "✓ resolved")
+	require.Contains(t, header, "file.go:1")
+	// The scrollable body carries the conversation (author bar at least).
+	require.NotEmpty(t, stripANSI(m.activityItems[0].detail))
+}
+
+// The detail header shows the outdated pill for an outdated thread.
+func TestOutdatedPillVisibleInDetail(t *testing.T) {
+	m := modelWithThreads(t)
+	m.SetWidth(80)
+	rendered, err := m.renderReviewThread("file.go", 1, true /*resolved*/, true /*outdated*/, []data.ReviewComment{{
+		Author: struct{ Login string }{Login: "octocat"}, UpdatedAt: time.Now(),
+	}})
 	require.NoError(t, err)
-	// Collapsed form is one line with the ✓ resolved pill + location.
-	require.Equal(t, 1, len(splitNonEmpty(stripANSI(rendered))))
 	visible := stripANSI(rendered)
+	require.Contains(t, visible, "outdated")
 	require.Contains(t, visible, "✓ resolved")
-	require.Contains(t, visible, "file.go:1")
 }
 
-// The outdated pill is left-anchored and shown in BOTH the collapsed and
-// expanded views, so a resolved+outdated thread reads as outdated either
-// way (it used to vanish while collapsed).
-func TestOutdatedPillVisibleCollapsedAndExpanded(t *testing.T) {
-	now := time.Now()
-	m := modelWithThreads(t,
-		thread("t1", 11, true, now.Add(-2*time.Minute)),
-		thread("t2", 22, false, now.Add(-1*time.Minute)),
-	)
-	m.SetWidth(80)
-	m.MoveThreadCursor(1) // keep t1 collapsed
-	nodes := m.allThreads()[0].Comments.Nodes
-
-	collapsed, err := m.renderReviewThread("file.go", 1, true /*resolved*/, true /*outdated*/, false /*focused*/, nodes)
-	require.NoError(t, err)
-	require.Contains(t, stripANSI(collapsed), "outdated")
-
-	expanded, err := m.renderReviewThread("file.go", 1, true /*resolved*/, true /*outdated*/, true /*focused*/, nodes)
-	require.NoError(t, err)
-	require.Contains(t, stripANSI(expanded), "outdated")
-}
-
-// A very long path is left-truncated (…/tail kept) so the state pills are
-// never pushed off-screen and the filename + line number survive.
+// A very long path in the detail header is left-truncated (…/tail kept) so
+// the state pills are never pushed off-screen and the filename + line
+// number survive.
 func TestLongPathTruncatesButKeepsPills(t *testing.T) {
-	now := time.Now()
-	m := modelWithThreads(t,
-		thread("t1", 11, true, now.Add(-2*time.Minute)),
-		thread("t2", 22, false, now.Add(-1*time.Minute)),
-	)
+	m := modelWithThreads(t)
 	m.SetWidth(60)
-	m.MoveThreadCursor(1)
-	nodes := m.allThreads()[0].Comments.Nodes
 	longPath := "internal/tui/components/prview/very/deep/nested/activity.go"
 
-	collapsed, err := m.renderReviewThread(longPath, 401, true /*resolved*/, true /*outdated*/, false /*focused*/, nodes)
-	require.NoError(t, err)
-	visible := stripANSI(collapsed)
-	// Pills survive; the path is truncated from the left so the tail shows.
-	require.Contains(t, visible, "✓ resolved")
-	require.Contains(t, visible, "outdated")
-	require.Contains(t, visible, constants.Ellipsis)
-	require.Contains(t, visible, "activity.go:401")
-	require.NotContains(t, visible, "internal/tui")
-	// Still a single collapsed line.
-	require.Equal(t, 1, len(splitNonEmpty(visible)))
-}
-
-// The active thread's header and its inline hint menu are laid on a
-// full-width selected-bg band (filled to the given width); an inactive
-// header is only as wide as its content. This is what visually bounds the
-// active comment.
-func TestActiveThreadHeaderAndHintsFillWidthBand(t *testing.T) {
-	m := modelWithThreads(t, thread("t1", 11, false, time.Now()))
-	m.SetWidth(80)
-	const w = 50
-
-	active := m.renderThreadHeader("file.go", 1, false, false, true /*focused*/, true /*expanded*/, w)
-	require.Equal(t, w, lipgloss.Width(active), "active header should fill the band width")
-
-	inactive := m.renderThreadHeader("file.go", 1, false, false, false /*focused*/, true /*expanded*/, w)
-	require.Less(t, lipgloss.Width(inactive), w, "inactive header should not be padded into a band")
-
-	hints := m.renderThreadHints(false, w)
-	require.Equal(t, w, lipgloss.Width(hints), "hint menu should fill the band width")
+	header := stripANSI(m.renderThreadHeader(longPath, 401, true /*resolved*/, true /*outdated*/, 50))
+	require.Contains(t, header, "✓ resolved")
+	require.Contains(t, header, "outdated")
+	require.Contains(t, header, constants.Ellipsis)
+	require.Contains(t, header, "activity.go:401")
+	require.NotContains(t, header, "internal/tui")
 }
 
 func splitNonEmpty(s string) []string {
@@ -236,7 +167,8 @@ func TestReplyAndResolveStashesBothTargets(t *testing.T) {
 		thread("t1", 11, false, now.Add(-2*time.Minute)),
 		thread("t2", 22, false, now.Add(-1*time.Minute)),
 	)
-	m.MoveThreadCursor(1) // focus t2
+	buildActivity(t, &m)
+	m.MoveThreadCursor(1) // select t2
 
 	m.SetIsReplyingAndResolving(true)
 	require.Equal(t, 22, m.replyTargetCommentId)
