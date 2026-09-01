@@ -546,15 +546,10 @@ func (m *Model) renderThreadBody(
 		BorderForeground(gutterColor).
 		PaddingLeft(1)
 
-	// Diff hunk lifted from the root comment (every comment in the thread
-	// carries the same hunk); render it once, colorized, above the
-	// conversation.
-	hunk := colorizeDiffHunk(comments[0].DiffHunk, innerWidth, &m.ctx.Theme)
-
+	// The conversation (root comment + replies) comes first; the diff hunk
+	// is shown below it. The hunk is lifted from the root comment once
+	// (every comment in the thread carries the same hunk).
 	var blocks []string
-	if hunk != "" {
-		blocks = append(blocks, hunk)
-	}
 	for i, c := range comments {
 		p := "├─ "
 		if i == 0 {
@@ -573,6 +568,10 @@ func (m *Model) renderThreadBody(
 			return "", err
 		}
 		blocks = append(blocks, who, rendered)
+	}
+
+	if hunk := colorizeDiffHunk(comments[0].DiffHunk, innerWidth, &m.ctx.Theme); hunk != "" {
+		blocks = append(blocks, hunk)
 	}
 
 	return gutter.Render(lipgloss.JoinVertical(lipgloss.Left, blocks...)), nil
