@@ -252,6 +252,52 @@ func TestRenderRequestedReviewers(t *testing.T) {
 			wantContains:   []string{"Reviewers", "@bob", constants.ChangesRequestedIcon},
 			wantNotContain: []string{constants.CommentIcon},
 		},
+		"requested reviewer who already approved (re-requested after a push)": {
+			// Regression for deepfield/pipedream#59834: the reviewer sits in
+			// reviewRequests AND in latestOpinionatedReviews as APPROVED (they
+			// approved, then a new push re-requested them). The Overview must
+			// show the approval, not a waiting dot, matching the Activity tab.
+			reviewRequests: []data.ReviewRequestNode{
+				{
+					AsCodeOwner: false,
+					RequestedReviewer: struct {
+						User      data.RequestedReviewerUser      `graphql:"... on User"`
+						Team      data.RequestedReviewerTeam      `graphql:"... on Team"`
+						Bot       data.RequestedReviewerBot       `graphql:"... on Bot"`
+						Mannequin data.RequestedReviewerMannequin `graphql:"... on Mannequin"`
+					}{
+						User: data.RequestedReviewerUser{Login: "peter"},
+					},
+				},
+			},
+			reviews: []data.Review{},
+			opinionated: []data.Review{
+				{Author: struct{ Login string }{Login: "peter"}, State: "APPROVED"},
+			},
+			wantContains:   []string{"Reviewers", "@peter", constants.ApprovedIcon},
+			wantNotContain: []string{constants.DotIcon},
+		},
+		"requested reviewer who requested changes then was re-requested": {
+			reviewRequests: []data.ReviewRequestNode{
+				{
+					AsCodeOwner: false,
+					RequestedReviewer: struct {
+						User      data.RequestedReviewerUser      `graphql:"... on User"`
+						Team      data.RequestedReviewerTeam      `graphql:"... on Team"`
+						Bot       data.RequestedReviewerBot       `graphql:"... on Bot"`
+						Mannequin data.RequestedReviewerMannequin `graphql:"... on Mannequin"`
+					}{
+						User: data.RequestedReviewerUser{Login: "quinn"},
+					},
+				},
+			},
+			reviews: []data.Review{},
+			opinionated: []data.Review{
+				{Author: struct{ Login string }{Login: "quinn"}, State: "CHANGES_REQUESTED"},
+			},
+			wantContains:   []string{"Reviewers", "@quinn", constants.ChangesRequestedIcon},
+			wantNotContain: []string{constants.DotIcon},
+		},
 		"mix of pending and completed reviews": {
 			reviewRequests: []data.ReviewRequestNode{
 				{
