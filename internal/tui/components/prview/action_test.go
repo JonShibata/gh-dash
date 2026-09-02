@@ -273,12 +273,12 @@ func TestSetIsReplyingToReviewNoThreadsIsNoOp(t *testing.T) {
 func TestPickReplyTargetUsesCursor(t *testing.T) {
 	m := newTestModelForAction(t)
 	enriched := data.EnrichedPullRequestData{}
-	mkThread := func(id int, resolved bool, updated time.Time) data.ReviewThread {
+	mkThread := func(id int, resolved bool, created time.Time) data.ReviewThread {
 		return data.ReviewThread{
 			Id:         fmt.Sprintf("thread-%d", id),
 			IsResolved: resolved,
 			Comments: data.ReviewComments{Nodes: []data.ReviewComment{
-				{DatabaseId: id, UpdatedAt: updated},
+				{DatabaseId: id, CreatedAt: created},
 			}},
 		}
 	}

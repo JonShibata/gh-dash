@@ -481,10 +481,21 @@ func (m *Model) renderRequestedReviewers() string {
 		shownReviewers[displayName] = true
 
 		var reviewerStr string
+		// A requested reviewer may also have already submitted a review: e.g.
+		// they approved, then a new push re-requested them, so they sit in
+		// reviewRequests AND in latestOpinionatedReviews as APPROVED. Render
+		// that opinion instead of a waiting dot; otherwise the Overview hides
+		// an approval the Activity tab plainly shows (and shownReviewers below
+		// then blocks the reviewed-but-not-requested loop from correcting it).
 		stateIcon := ""
-		if state, hasReview := reviewStates[displayName]; hasReview && state == "COMMENTED" {
+		switch reviewStates[displayName] {
+		case "APPROVED":
+			stateIcon = successStyle.Render(constants.ApprovedIcon)
+		case "CHANGES_REQUESTED":
+			stateIcon = errorStyle.Render(constants.ChangesRequestedIcon)
+		case "COMMENTED":
 			stateIcon = m.ctx.Styles.Common.CommentGlyph
-		} else {
+		default: // "", PENDING, DISMISSED, or not yet reviewed
 			stateIcon = m.ctx.Styles.Common.WaitingDotGlyph
 		}
 

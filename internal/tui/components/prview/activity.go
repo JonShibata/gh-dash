@@ -35,7 +35,7 @@ const (
 // without the cursor marker.
 type activityItem struct {
 	kind      activityKind
-	updatedAt time.Time
+	createdAt time.Time
 	// threadId is the GraphQL thread node id, non-empty only for
 	// kindThread rows. x/r/R act on it.
 	threadId string
@@ -60,7 +60,7 @@ func (i activityItem) key() string {
 	case kindThread:
 		return "t:" + i.threadId
 	default:
-		return string(rune('0'+int(i.kind))) + ":" + i.updatedAt.String()
+		return string(rune('0'+int(i.kind))) + ":" + i.createdAt.String()
 	}
 }
 
@@ -108,7 +108,7 @@ func (m *Model) buildActivityItems() []activityItem {
 		header := m.renderThreadHeader(thread.Path, thread.Line, thread.IsResolved, thread.IsOutdated, width)
 		items = append(items, activityItem{
 			kind:         kindThread,
-			updatedAt:    visible[0].UpdatedAt,
+			createdAt:    visible[0].CreatedAt,
 			threadId:     thread.Id,
 			resolved:     thread.IsResolved,
 			outdated:     thread.IsOutdated,
@@ -128,14 +128,14 @@ func (m *Model) buildActivityItems() []activityItem {
 		}
 		items = append(items, activityItem{
 			kind:         kindComment,
-			updatedAt:    c.UpdatedAt,
-			row:          m.renderCommentRow(c.Author.Login, c.Body, c.UpdatedAt, width),
-			detailHeader: m.pinBar(m.commentHeaderLine(c.Author.Login, c.UpdatedAt), width),
+			createdAt:    c.CreatedAt,
+			row:          m.renderCommentRow(c.Author.Login, c.Body, c.CreatedAt, width),
+			detailHeader: m.pinBar(m.commentHeaderLine(c.Author.Login, c.CreatedAt), width),
 			detail:       body,
 		})
 	}
 
-	for _, review := range m.pr.Data.Primary.Reviews.Nodes {
+	for _, review := range m.pr.Data.Enriched.Reviews.Nodes {
 		if isHidden(review.Author.Login) {
 			continue
 		}
@@ -145,7 +145,7 @@ func (m *Model) buildActivityItems() []activityItem {
 		}
 		items = append(items, activityItem{
 			kind:         kindReview,
-			updatedAt:    review.UpdatedAt,
+			createdAt:    review.CreatedAt,
 			row:          m.renderReviewRow(review, width),
 			detailHeader: m.pinBar(m.renderReviewHeader(review), width),
 			detail:       body,
@@ -153,7 +153,7 @@ func (m *Model) buildActivityItems() []activityItem {
 	}
 
 	sort.SliceStable(items, func(i, j int) bool {
-		return items[i].updatedAt.Before(items[j].updatedAt)
+		return items[i].createdAt.Before(items[j].createdAt)
 	})
 	return items
 }
@@ -399,7 +399,7 @@ func (m *Model) renderThreadRow(path string, line int, resolved, outdated bool, 
 	return row
 }
 
-func (m *Model) renderCommentRow(author, body string, updated time.Time, width int) string {
+func (m *Model) renderCommentRow(author, body string, created time.Time, width int) string {
 	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
 	snippet := firstLine(body)
 	return lipgloss.JoinHorizontal(
@@ -407,7 +407,7 @@ func (m *Model) renderCommentRow(author, body string, updated time.Time, width i
 		lipgloss.NewStyle().Foreground(m.ctx.Theme.SecondaryText).Render(constants.CommentsIcon),
 		" @",
 		author,
-		faint.Render(" · "+utils.TimeElapsed(updated)+" · "+snippet),
+		faint.Render(" · "+utils.TimeElapsed(created)+" · "+snippet),
 	)
 }
 
@@ -418,7 +418,7 @@ func (m *Model) renderReviewRow(review data.Review, width int) string {
 		m.renderReviewDecision(review.State),
 		" @",
 		review.Author.Login,
-		faint.Render(" reviewed · "+utils.TimeElapsed(review.UpdatedAt)),
+		faint.Render(" reviewed · "+utils.TimeElapsed(review.CreatedAt)),
 	)
 }
 
@@ -444,13 +444,13 @@ func (m *Model) pinBar(content string, width int) string {
 }
 
 // commentHeaderLine is the pinned bar for a PR conversation comment.
-func (m *Model) commentHeaderLine(author string, updated time.Time) string {
+func (m *Model) commentHeaderLine(author string, created time.Time) string {
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		lipgloss.NewStyle().Foreground(m.ctx.Theme.SecondaryText).Render(constants.CommentsIcon),
 		" ",
 		m.ctx.Styles.Common.MainTextStyle.Render(author),
-		lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).Render(" · "+utils.TimeElapsed(updated)),
+		lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).Render(" · "+utils.TimeElapsed(created)),
 	)
 }
 
@@ -473,7 +473,7 @@ func (m *Model) renderReviewHeader(review data.Review) string {
 		m.ctx.Styles.Common.MainTextStyle.Render(review.Author.Login),
 		" ",
 		lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).Render(
-			"reviewed "+utils.TimeElapsed(review.UpdatedAt)),
+			"reviewed "+utils.TimeElapsed(review.CreatedAt)),
 	)
 }
 
@@ -559,7 +559,7 @@ func (m *Model) renderThreadBody(
 			faint.Render(p),
 			m.ctx.Styles.Common.MainTextStyle.Render(c.Author.Login),
 			" ",
-			faint.Render(utils.TimeElapsed(c.UpdatedAt)),
+			faint.Render(utils.TimeElapsed(c.CreatedAt)),
 		)
 		body := lineCleanupRegex.ReplaceAllString(c.Body, "")
 		body = m.injectHints(body)

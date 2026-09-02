@@ -58,19 +58,28 @@ type EnrichedPullRequestData struct {
 	// stats; >30 commits in a single PR is rare and bumping this is a
 	// per-tick rate-limit cost on auto-refresh.
 	AllCommits AllCommits `graphql:"allCommits: commits(last: 30)"`
-	// Trimmed from last:50. Activity tab shows newest first; 20 covers
-	// the typical visible window. If a PR genuinely has more, a future
-	// "load more" path can paginate.
-	Comments      CommentsWithBody          `graphql:"comments(last: 20, orderBy: { field: UPDATED_AT, direction: DESC })"`
-	ReviewThreads ReviewThreadsWithComments `graphql:"reviewThreads(last: 30)"`
+	// first:100 is GitHub's max page size. This is the on-demand per-PR
+	// enrichment query, so fetching the full comment stream is cheap. A
+	// chatty bot (e.g. an AI reviewer re-run several times) can easily push
+	// a PR past a smaller window, silently dropping older comments from the
+	// Activity tab. orderBy is UPDATED_AT because that is the only field
+	// IssueCommentOrderField supports (CREATED_AT errors the whole query);
+	// the Activity tab re-sorts by CreatedAt for display, so this only
+	// affects which comments make the window when there are >100, not order.
+	Comments      CommentsWithBody          `graphql:"comments(last: 100, orderBy: { field: UPDATED_AT, direction: DESC })"`
+	ReviewThreads ReviewThreadsWithComments `graphql:"reviewThreads(last: 100)"`
 	// Trimmed from last:100. ReviewRequests rarely exceeds 20 in
 	// practice; the over-fetch was wasteful on every enrichment.
 	ReviewRequests ReviewRequests `graphql:"reviewRequests(last: 20)"`
-	// Trimmed from last:100. Reviews tab shows recent reviews; 30 is
-	// plenty for nearly all PRs. Also feeds the unread-review notification
-	// count, which wants the raw event stream — so this stays reviews(...),
-	// not the deduped latest* connections below.
-	Reviews Reviews `graphql:"reviews(last: 30)"`
+	// first:100 is GitHub's max page size. This is the on-demand per-PR
+	// enrichment query, so fetching the full event stream here is cheap
+	// (unlike the per-tick list query below, which trims aggressively).
+	// A chatty AI reviewer alone can post a dozen+ review events on one PR,
+	// so anything short of the max risks silently dropping some from the
+	// Activity tab. Also feeds the unread-review notification count, which
+	// wants the raw event stream — so this stays reviews(...), not the
+	// deduped latest* connections below.
+	Reviews Reviews `graphql:"reviews(last: 100)"`
 	// The reviewers section uses these instead of Reviews. reviews(last: N)
 	// returns individual review *events*, so a single chatty reviewer's many
 	// events can fill the window and truncate distinct reviewers out of it.
@@ -336,6 +345,7 @@ type Comment struct {
 	}
 	Body      string
 	UpdatedAt time.Time
+	CreatedAt time.Time
 }
 
 type ReviewComment struct {
@@ -361,6 +371,7 @@ type ReviewComment struct {
 	DiffHunk  string
 	Body      string
 	UpdatedAt time.Time
+	CreatedAt time.Time
 	StartLine int
 	Line      int
 }
@@ -385,6 +396,7 @@ type Review struct {
 	Body      string
 	State     string
 	UpdatedAt time.Time
+	CreatedAt time.Time
 }
 
 type Reviews struct {
@@ -400,7 +412,10 @@ type ReviewThread struct {
 	StartLine    int
 	Line         int
 	Path         string
-	Comments     ReviewComments `graphql:"comments(first: 20)"`
+	// first:100 is GitHub's max page size: a thread a bot replies in on
+	// every push (e.g. an AI reviewer) can easily exceed a smaller cap,
+	// silently dropping its own older replies from the thread's detail.
+	Comments ReviewComments `graphql:"comments(first: 100)"`
 }
 
 type ReviewThreadsWithComments struct {

@@ -20,15 +20,15 @@ func init() {
 
 // thread builds a minimal review thread with a single root comment so it
 // survives buildActivityItems (which drops zero-comment threads and sorts
-// by the root comment's UpdatedAt).
-func thread(id string, dbID int, resolved bool, updated time.Time) data.ReviewThread {
+// by the root comment's CreatedAt).
+func thread(id string, dbID int, resolved bool, created time.Time) data.ReviewThread {
 	return data.ReviewThread{
 		Id:         id,
 		IsResolved: resolved,
 		Path:       "file.go",
 		Line:       1,
 		Comments: data.ReviewComments{
-			Nodes: []data.ReviewComment{{DatabaseId: dbID, UpdatedAt: updated}},
+			Nodes: []data.ReviewComment{{DatabaseId: dbID, CreatedAt: created}},
 		},
 	}
 }
@@ -109,7 +109,7 @@ func TestOutdatedPillVisibleInDetail(t *testing.T) {
 	m := modelWithThreads(t)
 	m.SetWidth(80)
 	rendered, err := m.renderReviewThread("file.go", 1, true /*resolved*/, true /*outdated*/, []data.ReviewComment{{
-		Author: struct{ Login string }{Login: "octocat"}, UpdatedAt: time.Now(),
+		Author: struct{ Login string }{Login: "octocat"}, CreatedAt: time.Now(),
 	}})
 	require.NoError(t, err)
 	visible := stripANSI(rendered)

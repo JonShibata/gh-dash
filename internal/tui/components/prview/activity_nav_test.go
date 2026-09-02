@@ -25,12 +25,13 @@ func buildActivity(t *testing.T, m *Model) {
 
 // The activity list is one unified, oldest-first timeline of review
 // threads, PR comments, and reviews. n (next) moves DOWN the list, so the
-// items must be ordered by UpdatedAt ascending regardless of how the
-// GraphQL arrays came back. This pins that ordering.
+// items must be ordered by CreatedAt ascending regardless of how the
+// GraphQL arrays came back (and regardless of any later edit, which only
+// bumps UpdatedAt). This pins that ordering.
 func TestActivityListOrderMatchesTimeline(t *testing.T) {
 	m := newTestModelForAction(t)
 
-	mkThread := func(id, path string, updated time.Time) data.ReviewThread {
+	mkThread := func(id, path string, created time.Time) data.ReviewThread {
 		return data.ReviewThread{
 			Id:   id,
 			Path: path,
@@ -38,7 +39,7 @@ func TestActivityListOrderMatchesTimeline(t *testing.T) {
 			Comments: data.ReviewComments{Nodes: []data.ReviewComment{{
 				Author:    struct{ Login string }{Login: "octocat"},
 				Body:      "comment on " + path,
-				UpdatedAt: updated,
+				CreatedAt: created,
 			}}},
 		}
 	}
@@ -77,6 +78,42 @@ func TestActivityListOrderMatchesTimeline(t *testing.T) {
 	require.Equal(t, "T2", id)
 }
 
+// Reviews must come from Enriched.Reviews (last: 30), not Primary.Reviews
+// (last: 3, the shallow list-view fetch). A PR with more than 3 review
+// events, like one an AI reviewer commented on early and humans reviewed
+// several times after, would otherwise have its older reviews silently
+// dropped from the Activity tab.
+func TestActivityListIncludesReviewsBeyondPrimaryWindow(t *testing.T) {
+	m := newTestModelForAction(t)
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	mkReview := func(login string, created time.Time) data.Review {
+		return data.Review{
+			Author:    struct{ Login string }{Login: login},
+			State:     "COMMENTED",
+			Body:      "review by " + login,
+			CreatedAt: created,
+		}
+	}
+
+	enriched := data.EnrichedPullRequestData{}
+	enriched.Reviews.Nodes = []data.Review{
+		mkReview("ai-reviewer", base), // oldest; falls outside a last:3 window
+		mkReview("bob", base.Add(time.Hour)),
+		mkReview("carol", base.Add(2*time.Hour)),
+		mkReview("dave", base.Add(3*time.Hour)),
+	}
+	m.pr.Data.Enriched = enriched
+	m.pr.Data.IsEnriched = true
+	// Primary carries only the shallow last:3 fetch, missing ai-reviewer.
+	m.pr.Data.Primary.Reviews.Nodes = enriched.Reviews.Nodes[1:]
+
+	buildActivity(t, &m)
+
+	require.Len(t, m.activityItems, 4)
+	require.Contains(t, stripANSI(m.activityItems[0].row), "ai-reviewer")
+}
+
 // The list mixes threads with plain PR comments. x/r/R only act on review
 // threads, so FocusedThread must report a thread when a thread row is
 // selected and ok=false when a comment row is selected.
@@ -93,7 +130,7 @@ func TestActivitySelectionMapsToThread(t *testing.T) {
 			Comments: data.ReviewComments{Nodes: []data.ReviewComment{{
 				Author:    struct{ Login string }{Login: "octocat"},
 				Body:      "thread comment",
-				UpdatedAt: base,
+				CreatedAt: base,
 			}}},
 		},
 	)
@@ -101,7 +138,7 @@ func TestActivitySelectionMapsToThread(t *testing.T) {
 	enriched.Comments.Nodes = append(enriched.Comments.Nodes, data.Comment{
 		Author:    struct{ Login string }{Login: "octocat"},
 		Body:      "just a comment",
-		UpdatedAt: base.Add(time.Hour),
+		CreatedAt: base.Add(time.Hour),
 	})
 	m.pr.Data.Enriched = enriched
 	m.pr.Data.IsEnriched = true
@@ -136,7 +173,7 @@ func TestScrollDetailSurvivesSyncCycle(t *testing.T) {
 	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes, data.ReviewThread{
 		Id: "T1", Path: "file.go", Line: 1,
 		Comments: data.ReviewComments{Nodes: []data.ReviewComment{{
-			Author: struct{ Login string }{Login: "octocat"}, Body: body, UpdatedAt: time.Now(),
+			Author: struct{ Login string }{Login: "octocat"}, Body: body, CreatedAt: time.Now(),
 		}}},
 	})
 	m.pr.Data.Enriched = enriched
@@ -171,7 +208,7 @@ func TestScrollDetailSurvivesRefresh(t *testing.T) {
 	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes, data.ReviewThread{
 		Id: "T1", Path: "file.go", Line: 1,
 		Comments: data.ReviewComments{Nodes: []data.ReviewComment{{
-			Author: struct{ Login string }{Login: "octocat"}, Body: body, UpdatedAt: time.Now(),
+			Author: struct{ Login string }{Login: "octocat"}, Body: body, CreatedAt: time.Now(),
 		}}},
 	})
 	m.pr.Data.Enriched = enriched
@@ -202,7 +239,7 @@ func TestActivityRowHeightStable(t *testing.T) {
 		data.ReviewThread{
 			Id: "T1", Path: "file.go", Line: 1, IsResolved: true,
 			Comments: data.ReviewComments{Nodes: []data.ReviewComment{{
-				Author: struct{ Login string }{Login: "octocat"}, Body: "x", UpdatedAt: base,
+				Author: struct{ Login string }{Login: "octocat"}, Body: "x", CreatedAt: base,
 			}}},
 		},
 	)
