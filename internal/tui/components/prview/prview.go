@@ -32,7 +32,6 @@ import (
 
 var (
 	htmlCommentRegex = regexp.MustCompile("(?U)<!--(.|[[:space:]])*-->")
-	lineCleanupRegex = regexp.MustCompile(`((\n)+|^)([^\r\n]*\|[^\r\n]*(\n)?)+`)
 	foldBodyHeight   = 8
 )
 
@@ -649,7 +648,6 @@ func (m *Model) renderSummary() string {
 	width := m.getIndentedContentWidth()
 	// Strip HTML comments from body and cleanup body.
 	body := htmlCommentRegex.ReplaceAllString(m.pr.Data.Primary.Body, "")
-	body = lineCleanupRegex.ReplaceAllString(body, "")
 	body = m.injectHints(body)
 
 	desc := m.ctx.Styles.Common.MainTextStyle.Bold(true).Underline(true).Render(" Summary")

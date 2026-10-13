@@ -425,7 +425,6 @@ func (m *Model) renderReviewRow(review data.Review, width int) string {
 // firstLine returns the first non-empty, cleaned-up line of a body for use
 // as a one-line list snippet.
 func firstLine(body string) string {
-	body = lineCleanupRegex.ReplaceAllString(body, "")
 	for _, l := range strings.Split(body, "\n") {
 		l = strings.TrimSpace(l)
 		if l != "" {
@@ -456,7 +455,6 @@ func (m *Model) commentHeaderLine(author string, created time.Time) string {
 
 // renderCommentBody is the scrollable body for a PR conversation comment.
 func (m *Model) renderCommentBody(body string) (string, error) {
-	body = lineCleanupRegex.ReplaceAllString(body, "")
 	body = m.injectHints(body)
 	return markdown.Render(m.getIndentedContentWidth(), body)
 }
@@ -561,8 +559,7 @@ func (m *Model) renderThreadBody(
 			" ",
 			faint.Render(utils.TimeElapsed(c.CreatedAt)),
 		)
-		body := lineCleanupRegex.ReplaceAllString(c.Body, "")
-		body = m.injectHints(body)
+		body := m.injectHints(c.Body)
 		rendered, err := markdown.Render(innerWidth, body)
 		if err != nil {
 			return "", err

@@ -27,7 +27,6 @@ import (
 
 var (
 	htmlCommentRegex = regexp.MustCompile("(?U)<!--(.|[[:space:]])*-->")
-	lineCleanupRegex = regexp.MustCompile(`((\n)+|^)([^\r\n]*\|[^\r\n]*(\n)?)+`)
 )
 
 type Model struct {
@@ -213,7 +212,6 @@ func (m *Model) renderBody() string {
 	width := m.getIndentedContentWidth()
 	// Strip HTML comments from body and cleanup body.
 	body := htmlCommentRegex.ReplaceAllString(m.issue.Data.Body, "")
-	body = lineCleanupRegex.ReplaceAllString(body, "")
 
 	body = strings.TrimSpace(body)
 	if body == "" {

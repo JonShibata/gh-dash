@@ -81,8 +81,7 @@ func (m *Model) renderComment(
 				Render(utils.TimeElapsed(comment.UpdatedAt)),
 		))
 
-	body := lineCleanupRegex.ReplaceAllString(comment.Body, "")
-	body, err := markdownRenderer.Render(body)
+	body, err := markdownRenderer.Render(comment.Body)
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
