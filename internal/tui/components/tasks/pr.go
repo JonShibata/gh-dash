@@ -881,6 +881,9 @@ func ReplyToReviewComment(
 	})
 }
 
+// CopilotReviewer is the gh special value that requests (or re-requests) a Copilot review.
+const CopilotReviewer = "@copilot"
+
 // RequestReviewers adds one or more users as requested reviewers on the
 // PR via `gh pr edit --add-reviewer`. Mirrors AssignPR's shape: one
 // `--add-reviewer USER` flag per username (gh accepts repeats). Returns

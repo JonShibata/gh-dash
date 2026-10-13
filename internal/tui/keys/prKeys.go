@@ -38,6 +38,7 @@ type PRKeyMap struct {
 	NextReviewThread         key.Binding
 	PrevReviewThread         key.Binding
 	RequestReview            key.Binding
+	CopilotReview            key.Binding
 }
 
 var PRKeys = PRKeyMap{
@@ -162,6 +163,10 @@ var PRKeys = PRKeyMap{
 		key.WithKeys("p"),
 		key.WithHelp("p", "request review (people)"),
 	),
+	CopilotReview: key.NewBinding(
+		key.WithKeys("I"),
+		key.WithHelp("I", "request Copilot review"),
+	),
 }
 
 // PRFullHelp returns the PR-view bindings grouped into functional columns:
@@ -173,6 +178,7 @@ func PRFullHelp() [][]key.Binding {
 		{
 			PRKeys.Approve,
 			PRKeys.RequestReview,
+			PRKeys.CopilotReview,
 			PRKeys.Comment,
 			PRKeys.Label,
 			PRKeys.Assign,
@@ -280,6 +286,8 @@ func rebindPRKeys(keys []config.Keybinding) error {
 			key = &PRKeys.RerunFailedChecks
 		case "jenkinsRerun":
 			key = &PRKeys.JenkinsRerun
+		case "copilotReview":
+			key = &PRKeys.CopilotReview
 		case "reviewThreadReply":
 			key = &PRKeys.ReviewThreadReply
 		case "reviewThreadReplyResolve":

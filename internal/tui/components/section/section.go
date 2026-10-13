@@ -496,6 +496,9 @@ func (m *BaseModel) GetPromptConfirmation() string {
 		case m.PromptConfirmationAction == "rerunFailedChecks" && m.Ctx.View == config.PRsView:
 			prompt = "Rerun failed checks on this PR? (Y/n) "
 
+		case m.PromptConfirmationAction == "copilotReview" && m.Ctx.View == config.PRsView:
+			prompt = "Request (or re-request) a Copilot review on this PR? (Y/n) "
+
 		case m.PromptConfirmationAction == "jenkinsRerun" && m.Ctx.View == config.PRsView:
 			prompt = "Trigger Jenkins rerun for this PR? (Y/n) "
 

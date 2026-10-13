@@ -652,6 +652,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 
+			case key.Matches(msg, keys.PRKeys.CopilotReview):
+				if currRowData != nil {
+					cmd = m.promptConfirmation(currSection, "copilotReview")
+				}
+				return m, cmd
+
 			case key.Matches(msg, keys.PRKeys.JenkinsRerun):
 				// Silent no-op when Jenkins extension not configured.
 				// Hiding from help dynamically would need per-row mutation
