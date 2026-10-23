@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"io"
+	"math"
 	"os"
 	"reflect"
 	"runtime/debug"
@@ -251,6 +252,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// PageDown/Toggle keys still flow through the main switch below.
 		if m.detailFullscreen {
 			onActivity := m.prView.SelectedTab() == prview.ActivityTab
+			onCommits := m.prView.SelectedTab() == prview.CommitsTab
 			tid, isResolved, hasThread := "", false, false
 			if onActivity {
 				tid, isResolved, hasThread = m.prView.FocusedThread()
@@ -274,6 +276,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keys.NextSection):
 				m.prView.NextTab()
 				m.syncSidebar()
+				return m, nil
+			case onCommits && key.Matches(msg, keys.PRKeys.NextReviewThread):
+				m.moveCommitCursor(1)
+				return m, nil
+			case onCommits && key.Matches(msg, keys.PRKeys.PrevReviewThread):
+				m.moveCommitCursor(-1)
+				return m, nil
+			case onCommits && (key.Matches(msg, keys.PRKeys.Diff) ||
+				key.Matches(msg, m.keys.EnterDetail)):
+				return m, m.openCommitDiff()
+			case onCommits && key.Matches(msg, m.keys.Up):
+				m.moveCommitCursor(-1)
+				return m, nil
+			case onCommits && key.Matches(msg, m.keys.Down):
+				m.moveCommitCursor(1)
+				return m, nil
+			case onCommits && key.Matches(msg, m.keys.FirstLine):
+				m.moveCommitCursor(math.MinInt32)
+				return m, nil
+			case onCommits && key.Matches(msg, m.keys.LastLine):
+				m.moveCommitCursor(math.MaxInt32)
 				return m, nil
 			case onActivity && hasThread && key.Matches(msg, keys.PRKeys.ReviewThreadReplyResolve):
 				// R → reply to the focused thread AND resolve it on
@@ -412,6 +435,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncProgramContext()
 			m.sidebar.ScrollToTop()
 			cmd = m.syncSidebar()
+
+		case m.ctx.View == config.PRsView && currRowData != nil && m.sidebar.IsOpen &&
+			m.prView.SelectedTab() == prview.CommitsTab &&
+			key.Matches(msg, keys.PRKeys.NextReviewThread):
+			m.moveCommitCursor(1)
+			return m, nil
+
+		case m.ctx.View == config.PRsView && currRowData != nil && m.sidebar.IsOpen &&
+			m.prView.SelectedTab() == prview.CommitsTab &&
+			key.Matches(msg, keys.PRKeys.PrevReviewThread):
+			m.moveCommitCursor(-1)
+			return m, nil
+
+		case m.ctx.View == config.PRsView && currRowData != nil && m.sidebar.IsOpen &&
+			m.prView.SelectedTab() == prview.CommitsTab &&
+			key.Matches(msg, keys.PRKeys.Diff):
+			return m, m.openCommitDiff()
 
 		case m.ctx.View == config.PRsView && currRowData != nil &&
 			key.Matches(msg, keys.PRKeys.RequestReview):
@@ -762,8 +802,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 						case prview.PRActionDiff:
 							if pr := m.notificationView.GetSubjectPR(); pr != nil {
-								cmd = common.DiffPR(pr.GetNumber(), pr.GetRepoNameWithOwner(),
-									m.ctx.Config.GetFullScreenDiffPagerEnv())
+								if common.HasPatchViewer() {
+									cmd = common.ViewPRPatch(pr.GetNumber(), pr.GetRepoNameWithOwner())
+								} else {
+									cmd = common.DiffPR(pr.GetNumber(), pr.GetRepoNameWithOwner(),
+										m.ctx.Config.GetFullScreenDiffPagerEnv())
+								}
 							}
 							return m, cmd
 
@@ -999,6 +1043,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, syncCmd)
 		} else {
 			log.Error("failed enriching pr", "err", msg.Err)
+		}
+
+	case prview.CopilotWorkMsg:
+		if msg.Err == nil {
+			m.prView.SetCopilotWork(msg.Url, msg.Work)
+			cmds = append(cmds, m.syncSidebar())
+		} else {
+			log.Error("failed fetching copilot work", "err", msg.Err)
 		}
 
 	case prview.ImageReadyMsg:
@@ -1641,6 +1693,33 @@ func (m *Model) promptConfirmation(currSection section.Section, action string) t
 		return currSection.SetIsPromptConfirmationShown(true)
 	}
 	return nil
+}
+
+// moveCommitCursor moves the Commits tab selection and keeps the selected row in view.
+func (m *Model) moveCommitCursor(delta int) {
+	m.prView.MoveCommitCursor(delta)
+	m.syncSidebar()
+	line := m.prView.CommitCursorLine()
+	top, height := m.sidebar.YOffset(), m.sidebar.ViewportHeight()
+	switch {
+	case line < top:
+		m.sidebar.ScrollToLine(line)
+	case line+prview.CommitRowLines > top+height:
+		m.sidebar.ScrollToLine(line + prview.CommitRowLines - height)
+	}
+}
+
+// openCommitDiff opens the selected commit of the viewed PR in diff-tui.
+func (m *Model) openCommitDiff() tea.Cmd {
+	row := m.getCurrRowData()
+	oid, ok := m.prView.SelectedCommitOid()
+	if row == nil || !ok {
+		return nil
+	}
+	if !common.HasPatchViewer() {
+		return m.notifyErr("diff-tui not found on PATH")
+	}
+	return common.ViewCommitPatch(row.GetRepoNameWithOwner(), oid)
 }
 
 func (m *Model) syncSidebar() tea.Cmd {

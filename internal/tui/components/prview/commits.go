@@ -6,10 +6,24 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/dlvhdr/gh-dash/v4/internal/data"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/constants"
 	"github.com/dlvhdr/gh-dash/v4/internal/utils"
 	checks "github.com/dlvhdr/x/gh-checks"
 )
+
+// Rows in the Commits tab: the heading with its margin, then title + description + connector per commit.
+const (
+	CommitHeadingLines = 2
+	CommitRowLines     = 3
+)
+
+func (m *Model) commits() []data.CommitNode {
+	if m.pr == nil || m.pr.Data == nil || !m.pr.Data.IsEnriched {
+		return nil
+	}
+	return m.pr.Data.Enriched.AllCommits.Nodes
+}
 
 func (m *Model) renderCommits() string {
 	main := m.ctx.Styles.Common.MainTextStyle
@@ -25,7 +39,7 @@ func (m *Model) renderCommits() string {
 		)
 	}
 
-	commits := m.pr.Data.Enriched.AllCommits.Nodes
+	commits := m.commits()
 	heading := m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(
 		fmt.Sprintf("%s  %d commits", constants.CommitIcon, len(commits)))
 
@@ -36,11 +50,11 @@ func (m *Model) renderCommits() string {
 		if name == "" {
 			name = commit.Author.Name
 		}
-		left := fmt.Sprintf(
-			"%s %s",
-			faint.Render(constants.VerticalCommitIcon),
-			main.Render(commit.MessageHeadline),
-		)
+		marker := faint.Render(constants.VerticalCommitIcon)
+		if i == m.commitCursor {
+			marker = lipgloss.NewStyle().Foreground(m.ctx.Theme.WarningText).Render(constants.SelectionIcon)
+		}
+		left := fmt.Sprintf("%s %s", marker, main.Render(commit.MessageHeadline))
 		right := faint.Render(commit.AbbreviatedOid)
 		wright := lipgloss.Width(right)
 		left = ansi.Truncate(left, max(0, m.getIndentedContentWidth()-wright-1), constants.Ellipsis)

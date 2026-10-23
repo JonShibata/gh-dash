@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"charm.land/log/v2"
@@ -260,19 +261,22 @@ type StatusCheckRollupStats struct {
 }
 
 type AllCommits struct {
-	Nodes []struct {
-		Commit struct {
-			AbbreviatedOid  string
-			CommittedDate   time.Time
-			MessageHeadline string
-			Author          struct {
-				Name string
-				User struct {
-					Login string
-				}
+	Nodes []CommitNode
+}
+
+type CommitNode struct {
+	Commit struct {
+		Oid             string
+		AbbreviatedOid  string
+		CommittedDate   time.Time
+		MessageHeadline string
+		Author          struct {
+			Name string
+			User struct {
+				Login string
 			}
-			StatusCheckRollup StatusCheckRollupStats
 		}
+		StatusCheckRollup StatusCheckRollupStats
 	}
 }
 
@@ -496,6 +500,11 @@ func (r ReviewRequestNode) GetReviewerType() string {
 		return "Mannequin"
 	}
 	return ""
+}
+
+// IsCopilot reports whether the requested reviewer is the Copilot review bot.
+func (r ReviewRequestNode) IsCopilot() bool {
+	return strings.HasPrefix(strings.ToLower(r.RequestedReviewer.Bot.Login), "copilot")
 }
 
 func (r ReviewRequestNode) IsTeam() bool {

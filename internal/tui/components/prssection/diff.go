@@ -12,6 +12,10 @@ func (m Model) diff() tea.Cmd {
 		return nil
 	}
 
+	if common.HasPatchViewer() {
+		return common.ViewPRPatch(currRowData.GetNumber(), currRowData.GetRepoNameWithOwner())
+	}
+
 	return common.DiffPR(
 		currRowData.GetNumber(),
 		currRowData.GetRepoNameWithOwner(),

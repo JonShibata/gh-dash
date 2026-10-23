@@ -28,6 +28,7 @@ type Dimensions struct {
 const (
 	Ellipsis = "…"
 
+	ReviewingIcon        = "\uf46a" // nf-oct-sync
 	ApprovedIcon         = "󰄬"
 	ChangesRequestedIcon = ""
 	DotIcon              = ""

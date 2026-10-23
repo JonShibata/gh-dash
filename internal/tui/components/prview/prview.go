@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -72,6 +73,12 @@ type Model struct {
 	// when the data or width changes (activityDirty). Each item holds its
 	// list row and its detail, so scrolling never re-renders.
 	activityItems []activityItem
+	// commitCursor is the selected row in the Commits tab; d opens that commit's diff.
+	commitCursor int
+	// copilotWork is the latest Copilot review cycle for copilotWorkUrl; only
+	// shown while a Copilot review request is still pending.
+	copilotWork    data.CopilotWork
+	copilotWorkUrl string
 	// activityDirty marks activityItems as needing a rebuild (set on PR
 	// data change, enrichment swap, width change, and theme change).
 	activityDirty bool
@@ -469,6 +476,7 @@ func (m *Model) renderRequestedReviewers() string {
 	reviewerStyle := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
 	successStyle := lipgloss.NewStyle().Foreground(m.ctx.Theme.SuccessText)
 	errorStyle := lipgloss.NewStyle().Foreground(m.ctx.Theme.ErrorText)
+	reviewingStyle := lipgloss.NewStyle().Foreground(m.ctx.Theme.WarningText)
 
 	shownReviewers := make(map[string]bool)
 
@@ -502,6 +510,10 @@ func (m *Model) renderRequestedReviewers() string {
 			reviewerStr += reviewerStyle.Render(displayName)
 		} else {
 			reviewerStr += reviewerStyle.Render("@" + displayName)
+		}
+		if _, reviewing := m.copilotReviewing(); reviewing && req.IsCopilot() {
+			stateIcon = reviewingStyle.Render(constants.ReviewingIcon)
+			reviewerStr += reviewingStyle.Render(" reviewing" + constants.Ellipsis)
 		}
 
 		if req.AsCodeOwner {
@@ -744,6 +756,7 @@ func (m *Model) SetRow(d *prrow.Data) {
 		// (SetEnrichedPR, SetThreadResolvedOptimistic, SetWidth,
 		// UpdateProgramContext).
 		m.activityCursor = 0
+		m.commitCursor = 0
 		m.loadedDetailKey = ""
 		m.activityDirty = true
 	}
@@ -764,7 +777,7 @@ func (m *Model) EnrichCurrRow() tea.Cmd {
 	}
 	url := m.pr.Data.Primary.Url
 	log.Info("EnrichCurrRow firing", "url", url, "sectionId", m.sectionId)
-	return func() tea.Msg {
+	return tea.Batch(func() tea.Msg {
 		d, err := data.FetchPullRequest(url)
 		return EnrichedPrMsg{
 			Id:   m.sectionId,
@@ -772,7 +785,7 @@ func (m *Model) EnrichCurrRow() tea.Cmd {
 			Data: d,
 			Err:  err,
 		}
-	}
+	}, m.fetchCopilotWork())
 }
 
 // RefreshEnrichedCurrRow re-fetches the enriched payload (checks,
@@ -788,7 +801,7 @@ func (m *Model) RefreshEnrichedCurrRow() tea.Cmd {
 		return nil
 	}
 	url := m.pr.Data.Primary.Url
-	return func() tea.Msg {
+	return tea.Batch(func() tea.Msg {
 		d, err := data.FetchPullRequest(url)
 		return EnrichedPrMsg{
 			Id:   m.sectionId,
@@ -796,7 +809,46 @@ func (m *Model) RefreshEnrichedCurrRow() tea.Cmd {
 			Data: d,
 			Err:  err,
 		}
+	}, m.fetchCopilotWork())
+}
+
+// CopilotWorkMsg carries the Copilot review cycle read from the REST timeline.
+type CopilotWorkMsg struct {
+	Url  string
+	Work data.CopilotWork
+	Err  error
+}
+
+// fetchCopilotWork reads the REST timeline, but only for PRs with a pending Copilot request.
+func (m *Model) fetchCopilotWork() tea.Cmd {
+	p := m.pr.Data.Primary
+	if !slices.ContainsFunc(p.ReviewRequests.Nodes, data.ReviewRequestNode.IsCopilot) {
+		return nil
 	}
+	url, repo, number := p.Url, p.Repository.NameWithOwner, p.Number
+	return func() tea.Msg {
+		work, err := data.FetchCopilotWork(repo, number)
+		return CopilotWorkMsg{Url: url, Work: work, Err: err}
+	}
+}
+
+func (m *Model) SetCopilotWork(url string, work data.CopilotWork) {
+	m.copilotWorkUrl = url
+	m.copilotWork = work
+	m.activityDirty = true
+}
+
+// copilotReviewing returns the in-flight Copilot review: requested, started, and not yet landed.
+func (m *Model) copilotReviewing() (data.CopilotWork, bool) {
+	if !m.hasData() || m.copilotWorkUrl != m.pr.Data.Primary.Url {
+		return data.CopilotWork{}, false
+	}
+	requests, _, _, _ := m.reviewerSources()
+	if !slices.ContainsFunc(requests, data.ReviewRequestNode.IsCopilot) {
+		return data.CopilotWork{}, false
+	}
+	w := m.copilotWork
+	return w, !w.StartedAt.IsZero() && !w.StartedAt.Before(w.RequestedAt)
 }
 
 func (m *Model) SetWidth(width int) {
@@ -1331,6 +1383,30 @@ func (m *Model) FocusedThread() (id string, isResolved bool, ok bool) {
 		return "", false, false
 	}
 	return t.Id, t.IsResolved, true
+}
+
+// MoveCommitCursor moves the Commits tab selection by delta, clamped to the commit list.
+func (m *Model) MoveCommitCursor(delta int) {
+	n := len(m.commits())
+	if n == 0 {
+		m.commitCursor = 0
+		return
+	}
+	m.commitCursor = min(max(m.commitCursor+delta, 0), n-1)
+}
+
+// CommitCursorLine is the sidebar content line where the selected commit row starts.
+func (m *Model) CommitCursorLine() int {
+	return lipgloss.Height(m.viewHeader()) + CommitHeadingLines + CommitRowLines*m.commitCursor
+}
+
+// SelectedCommitOid returns the full sha of the selected commit.
+func (m *Model) SelectedCommitOid() (string, bool) {
+	commits := m.commits()
+	if m.commitCursor < 0 || m.commitCursor >= len(commits) {
+		return "", false
+	}
+	return commits[m.commitCursor].Commit.Oid, true
 }
 
 // MoveThreadCursor advances the activity-tab list selection by delta and

@@ -25,6 +25,7 @@ const (
 	kindThread activityKind = iota
 	kindComment
 	kindReview
+	kindCopilotWork
 )
 
 // activityItem is one row in the Activity tab's list pane, plus the fully
@@ -150,6 +151,10 @@ func (m *Model) buildActivityItems() []activityItem {
 			detailHeader: m.pinBar(m.renderReviewHeader(review), width),
 			detail:       body,
 		})
+	}
+
+	if work, ok := m.copilotReviewing(); ok {
+		items = append(items, m.copilotWorkItem(work, width))
 	}
 
 	sort.SliceStable(items, func(i, j int) bool {
@@ -397,6 +402,22 @@ func (m *Model) renderThreadRow(path string, line int, resolved, outdated bool, 
 		faint.Render(fmt.Sprintf("  @%s · %d", author, len(comments))),
 	)
 	return row
+}
+
+// copilotWorkItem is the in-progress row GitHub shows as "Copilot started reviewing".
+func (m *Model) copilotWorkItem(work data.CopilotWork, width int) activityItem {
+	faint := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
+	reviewing := lipgloss.NewStyle().Foreground(m.ctx.Theme.WarningText)
+	icon := reviewing.Render(constants.ReviewingIcon)
+	label := reviewing.Render("Copilot is reviewing" + constants.Ellipsis)
+	since := faint.Render(" · started " + utils.TimeElapsed(work.StartedAt))
+	return activityItem{
+		kind:         kindCopilotWork,
+		createdAt:    work.StartedAt,
+		row:          icon + " " + label + since,
+		detailHeader: m.pinBar(icon+" "+label+since, width),
+		detail:       faint.Render("Copilot started reviewing this pull request. The review will appear here when it lands."),
+	}
 }
 
 func (m *Model) renderCommentRow(author, body string, created time.Time, width int) string {
