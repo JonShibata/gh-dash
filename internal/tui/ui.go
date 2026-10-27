@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"reflect"
+	"regexp"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -49,6 +50,9 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/pollgate"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
 )
+
+// titlePrefix matches a leading ticket key or number such as "DEFBE-123 9:", "DEFBE-123:" or "42:".
+var titlePrefix = regexp.MustCompile(`^\s*(?:[A-Za-z][A-Za-z0-9]*-\d+(?:\s+\d+)?|\d+)\s*:\s*`)
 
 type Model struct {
 	keys             *keys.KeyMap
@@ -562,12 +566,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd = m.notifyErr("Current selection isn't associated with a PR/Issue")
 				return m, cmd
 			}
-			// Markdown-link format with the issue/PR number appended
-			// outside the link: pastes as a clickable link in
-			// Slack/GitHub/Jira/etc. with the bare "#1234" hanging
-			// off the end so the number stays mentionable/searchable
-			// even after the link rendering collapses the URL.
-			payload := fmt.Sprintf("[%s](%s) #%d", currRowData.GetTitle(), currRowData.GetUrl(), currRowData.GetNumber())
+			payload := fmt.Sprintf("%s %s", titlePrefix.ReplaceAllString(currRowData.GetTitle(), ""), currRowData.GetUrl())
 			err := clipboard.WriteAll(payload)
 			if err != nil {
 				cmd = m.notifyErr(fmt.Sprintf("Failed copying to clipboard %v", err))

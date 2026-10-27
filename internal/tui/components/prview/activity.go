@@ -588,7 +588,8 @@ func (m *Model) renderThreadBody(
 		blocks = append(blocks, who, rendered)
 	}
 
-	if hunk := colorizeDiffHunk(comments[0].DiffHunk, innerWidth, &m.ctx.Theme); hunk != "" {
+	if hunk := colorizeDiffHunk(
+		trimDiffHunk(comments[0].DiffHunk, comments[0].StartLine, comments[0].Line), innerWidth, &m.ctx.Theme); hunk != "" {
 		blocks = append(blocks, hunk)
 	}
 

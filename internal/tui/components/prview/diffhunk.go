@@ -72,3 +72,26 @@ func colorizeDiffHunk(hunk string, width int, th *theme.Theme) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// defaultHunkContext is how many trailing lines to show when the comment's
+// line range is unknown (single-line or outdated comments).
+const defaultHunkContext = 4
+
+// trimDiffHunk keeps only the lines a review comment points at. GitHub's
+// DiffHunk runs from the hunk start to the commented line, so the last
+// (line-startLine+1) lines are the highlighted range. The "@@" header is dropped.
+func trimDiffHunk(hunk string, startLine, line int) string {
+	hunk = strings.TrimRight(hunk, "\n")
+	lines := strings.Split(hunk, "\n")
+	keep := defaultHunkContext
+	if startLine > 0 && line > startLine {
+		keep = line - startLine + 1
+	}
+	if len(lines) > 0 && strings.HasPrefix(lines[0], "@@") {
+		lines = lines[1:]
+	}
+	if len(lines) > keep {
+		lines = lines[len(lines)-keep:]
+	}
+	return strings.Join(lines, "\n")
+}
