@@ -87,6 +87,11 @@ type Model struct {
 	focusUrl string
 }
 
+const (
+	taskClearDelay      = 2 * time.Second
+	taskErrorClearDelay = 7 * time.Second
+)
+
 func NewModel(location config.Location) Model {
 	taskSpinner := spinner.Model{Spinner: spinner.Dot}
 	m := Model{
@@ -709,6 +714,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 
+			case key.Matches(msg, keys.PRKeys.AIReview):
+				if currRowData != nil {
+					cmd = m.promptConfirmation(currSection, "aiReview")
+				}
+				return m, cmd
+
 			case key.Matches(msg, keys.PRKeys.ViewIssues):
 				cmds = append(cmds, m.switchSelectedView())
 
@@ -1001,7 +1012,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			now := time.Now()
 			task.FinishedTime = &now
 			m.tasks[msg.TaskId] = task
-			clear := tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+			clearAfter := taskClearDelay
+			if msg.Err != nil {
+				clearAfter = taskErrorClearDelay
+			}
+			clear := tea.Tick(clearAfter, func(t time.Time) tea.Msg {
 				return constants.ClearTaskMsg{TaskId: msg.TaskId}
 			})
 			cmds = append(cmds, clear)

@@ -546,6 +546,29 @@ func CommentOnPR(
 	})
 }
 
+// AIReviewPR posts the "/ai-review" slash command that triggers the CI reviewer.
+func AIReviewPR(ctx *context.ProgramContext, section SectionIdentifier, pr data.RowData) tea.Cmd {
+	prNumber := pr.GetNumber()
+	return fireTask(ctx, GitHubTask{
+		Id: buildTaskId("pr_ai_review", prNumber),
+		Args: []string{
+			"pr",
+			"comment",
+			fmt.Sprint(prNumber),
+			"-R",
+			pr.GetRepoNameWithOwner(),
+			"-b",
+			"/ai-review",
+		},
+		Section:      section,
+		StartText:    fmt.Sprintf("Requesting AI review on PR #%d", prNumber),
+		FinishedText: fmt.Sprintf("Posted /ai-review on PR #%d", prNumber),
+		Msg: func(c *exec.Cmd, err error) tea.Msg {
+			return UpdatePRMsg{PrNumber: prNumber}
+		},
+	})
+}
+
 func ApprovePR(
 	ctx *context.ProgramContext,
 	section SectionIdentifier,

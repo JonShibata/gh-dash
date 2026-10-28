@@ -502,6 +502,9 @@ func (m *BaseModel) GetPromptConfirmation() string {
 		case m.PromptConfirmationAction == "jenkinsRerun" && m.Ctx.View == config.PRsView:
 			prompt = "Trigger Jenkins rerun for this PR? (Y/n) "
 
+		case m.PromptConfirmationAction == "aiReview" && m.Ctx.View == config.PRsView:
+			prompt = "Post /ai-review on this PR? (Y/n) "
+
 		case m.PromptConfirmationAction == "close" && m.Ctx.View == config.IssuesView:
 			prompt = "Are you sure you want to close this issue? (Y/n) "
 

@@ -118,6 +118,8 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 						cmd = tasks.RerunFailedChecksOnPR(m.Ctx, sid, pr)
 					case "copilotReview":
 						cmd = tasks.RequestReviewers(m.Ctx, sid, pr, []string{tasks.CopilotReviewer})
+					case "aiReview":
+						cmd = tasks.AIReviewPR(m.Ctx, sid, pr)
 					case "jenkinsRerun":
 						cmd = tasks.TriggerJenkinsRerun(m.Ctx, sid, pr)
 					default:

@@ -33,6 +33,7 @@ type PRKeyMap struct {
 	OpenFirstFailed          key.Binding
 	RerunFailedChecks        key.Binding
 	JenkinsRerun             key.Binding
+	AIReview                 key.Binding
 	ReviewThreadReply        key.Binding
 	ReviewThreadReplyResolve key.Binding
 	NextReviewThread         key.Binding
@@ -134,6 +135,10 @@ var PRKeys = PRKeyMap{
 		key.WithKeys("J"),
 		key.WithHelp("J", "trigger Jenkins rerun"),
 	),
+	AIReview: key.NewBinding(
+		key.WithKeys("i"),
+		key.WithHelp("i", "ai review"),
+	),
 	// Lowercase r overrides the universal Refresh binding ONLY when the
 	// prview is in fullscreen on the Activity tab with a focused thread
 	// (see ui.go). Outside that scope, r remains Refresh.
@@ -201,6 +206,7 @@ func PRFullHelp() [][]key.Binding {
 			PRKeys.OpenFirstFailed,
 			PRKeys.RerunFailedChecks,
 			PRKeys.JenkinsRerun,
+			PRKeys.AIReview,
 			PRKeys.ApproveWorkflows,
 		},
 		// Navigate & filter
@@ -286,6 +292,8 @@ func rebindPRKeys(keys []config.Keybinding) error {
 			key = &PRKeys.RerunFailedChecks
 		case "jenkinsRerun":
 			key = &PRKeys.JenkinsRerun
+		case "aiReview":
+			key = &PRKeys.AIReview
 		case "copilotReview":
 			key = &PRKeys.CopilotReview
 		case "reviewThreadReply":
