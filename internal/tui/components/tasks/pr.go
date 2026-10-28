@@ -268,7 +268,7 @@ func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.Row
 			"-F", "num="+fmt.Sprint(prNumber),
 			"-F", "owner="+owner,
 			"-F", "name="+name,
-			"-f", "query=query($num:Int!,$owner:String!,$name:String!){repository(owner:$owner,name:$name){mergeQueue{id} pullRequest(number:$num){id}}}",
+			"-f", "query=query($num:Int!,$owner:String!,$name:String!){repository(owner:$owner,name:$name){mergeQueue{id} viewerDefaultMergeMethod squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed pullRequest(number:$num){id}}}",
 		)
 		probeOut, err := probe.Output()
 		if err != nil {
@@ -280,7 +280,11 @@ func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.Row
 					MergeQueue *struct {
 						ID string `json:"id"`
 					} `json:"mergeQueue"`
-					PullRequest struct {
+					ViewerDefaultMergeMethod string `json:"viewerDefaultMergeMethod"`
+					SquashMergeAllowed       bool   `json:"squashMergeAllowed"`
+					MergeCommitAllowed       bool   `json:"mergeCommitAllowed"`
+					RebaseMergeAllowed       bool   `json:"rebaseMergeAllowed"`
+					PullRequest              struct {
 						ID string `json:"id"`
 					} `json:"pullRequest"`
 				} `json:"repository"`
@@ -329,12 +333,14 @@ func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.Row
 			return finished(nil, UpdatePRMsg{PrNumber: prNumber, IsInMergeQueue: &queued})
 		}
 
-		// Non-queue fallback: the historical gh pr merge path. Run
-		// non-interactively (no TTY) — for repos that need
-		// interactive method selection, gh's prompt failure is
-		// surfaced as the task error. Most CLEAN-state PRs in
-		// single-method repos merge fine non-interactively.
-		mergeCmd := exec.Command("gh", "pr", "merge", fmt.Sprint(prNumber), "-R", repo)
+		// Non-queue path: gh cannot prompt for a method without a TTY, so pass one explicitly.
+		r := probeResp.Data.Repository
+		args := []string{"pr", "merge", fmt.Sprint(prNumber), "-R", repo}
+		if flag := mergeMethodFlag(r.ViewerDefaultMergeMethod, r.SquashMergeAllowed,
+			r.MergeCommitAllowed, r.RebaseMergeAllowed); flag != "" {
+			args = append(args, flag)
+		}
+		mergeCmd := exec.Command("gh", args...)
 		out, err := mergeCmd.CombinedOutput()
 		if err != nil {
 			return failed(fmt.Errorf("gh pr merge: %s", strings.TrimSpace(string(out))))
@@ -344,6 +350,26 @@ func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.Row
 	}
 
 	return tea.Batch(startCmd, mergeCmd)
+}
+
+// mergeMethodFlag returns the `gh pr merge` method flag for the repo's default method.
+// It falls back to the first allowed method (squash, rebase, merge) and returns "" if none.
+func mergeMethodFlag(defaultMethod string, squash, merge, rebase bool) string {
+	switch {
+	case defaultMethod == "SQUASH" && squash:
+		return "--squash"
+	case defaultMethod == "REBASE" && rebase:
+		return "--rebase"
+	case defaultMethod == "MERGE" && merge:
+		return "--merge"
+	case squash:
+		return "--squash"
+	case rebase:
+		return "--rebase"
+	case merge:
+		return "--merge"
+	}
+	return ""
 }
 
 func CreatePR(

@@ -149,3 +149,24 @@ func TestApproveWorkflows_SectionIdentifierPropagation(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeMethodFlag(t *testing.T) {
+	tests := []struct {
+		name                  string
+		def                   string
+		squash, merge, rebase bool
+		want                  string
+	}{
+		{"default squash", "SQUASH", true, true, true, "--squash"},
+		{"default merge", "MERGE", true, true, true, "--merge"},
+		{"default rebase", "REBASE", true, true, true, "--rebase"},
+		{"default disallowed falls back", "MERGE", true, false, true, "--squash"},
+		{"only rebase", "SQUASH", false, false, true, "--rebase"},
+		{"none allowed", "SQUASH", false, false, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, mergeMethodFlag(tt.def, tt.squash, tt.merge, tt.rebase))
+		})
+	}
+}
