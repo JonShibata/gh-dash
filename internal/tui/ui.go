@@ -83,6 +83,8 @@ type Model struct {
 	// area and hides the section list. Toggled with Enter (in) and
 	// Esc/q/Backspace (out). Only meaningful when a row is selected.
 	detailFullscreen bool
+	// focusUrl is the --focus target; cleared once the Activity tab has jumped to it.
+	focusUrl string
 }
 
 func NewModel(location config.Location) Model {
@@ -92,6 +94,7 @@ func NewModel(location config.Location) Model {
 		sidebar:     sidebar.NewModel(),
 		taskSpinner: taskSpinner,
 		tasks:       map[string]context.Task{},
+		focusUrl:    location.FocusUrl,
 	}
 
 	version := "dev"
@@ -1037,6 +1040,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case prview.EnrichedPrMsg:
 		if msg.Err == nil {
 			m.prView.SetEnrichedPR(msg.Data)
+			if m.focusUrl != "" && m.prView.FocusActivityUrl(m.focusUrl) {
+				m.focusUrl = ""
+			}
 			m.prs[msg.Id].(*prssection.Model).EnrichPR(msg.Data)
 			syncCmd := m.syncSidebar()
 			cmds = append(cmds, syncCmd)

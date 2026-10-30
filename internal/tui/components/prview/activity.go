@@ -2,6 +2,7 @@ package prview
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -40,6 +41,9 @@ type activityItem struct {
 	// threadId is the GraphQL thread node id, non-empty only for
 	// kindThread rows. x/r/R act on it.
 	threadId string
+	// ids are the REST ids that the item's `#...` URL anchors name: every
+	// comment of a thread, or the one comment or review.
+	ids      []int
 	resolved bool
 	outdated bool
 	row      string
@@ -107,10 +111,15 @@ func (m *Model) buildActivityItems() []activityItem {
 			continue
 		}
 		header := m.renderThreadHeader(thread.Path, thread.Line, thread.IsResolved, thread.IsOutdated, width)
+		ids := make([]int, 0, len(visible))
+		for _, c := range visible {
+			ids = append(ids, c.DatabaseId)
+		}
 		items = append(items, activityItem{
 			kind:         kindThread,
 			createdAt:    visible[0].CreatedAt,
 			threadId:     thread.Id,
+			ids:          ids,
 			resolved:     thread.IsResolved,
 			outdated:     thread.IsOutdated,
 			row:          m.renderThreadRow(thread.Path, thread.Line, thread.IsResolved, thread.IsOutdated, visible, width),
@@ -130,6 +139,7 @@ func (m *Model) buildActivityItems() []activityItem {
 		items = append(items, activityItem{
 			kind:         kindComment,
 			createdAt:    c.CreatedAt,
+			ids:          []int{c.DatabaseId},
 			row:          m.renderCommentRow(c.Author.Login, c.Body, c.CreatedAt, width),
 			detailHeader: m.pinBar(m.commentHeaderLine(c.Author.Login, c.CreatedAt), width),
 			detail:       body,
@@ -147,6 +157,7 @@ func (m *Model) buildActivityItems() []activityItem {
 		items = append(items, activityItem{
 			kind:         kindReview,
 			createdAt:    review.CreatedAt,
+			ids:          []int{review.DatabaseId},
 			row:          m.renderReviewRow(review, width),
 			detailHeader: m.pinBar(m.renderReviewHeader(review), width),
 			detail:       body,
@@ -627,4 +638,54 @@ func (m *Model) renderReviewDecision(decision string) string {
 	}
 
 	return ""
+}
+
+// anchorKinds maps a GitHub URL fragment prefix to the activity kind it names.
+var anchorKinds = []struct {
+	prefix string
+	kind   activityKind
+}{
+	{"discussion_r", kindThread},
+	{"issuecomment-", kindComment},
+	{"pullrequestreview-", kindReview},
+}
+
+// parseActivityAnchor splits `<pr url>#<anchor><id>` into the PR url, kind and id.
+func parseActivityAnchor(url string) (prUrl string, kind activityKind, id int, ok bool) {
+	prUrl, fragment, found := strings.Cut(url, "#")
+	if !found {
+		return "", 0, 0, false
+	}
+	for _, a := range anchorKinds {
+		raw, hasPrefix := strings.CutPrefix(fragment, a.prefix)
+		if !hasPrefix {
+			continue
+		}
+		if _, err := fmt.Sscanf(raw, "%d", &id); err != nil {
+			return "", 0, 0, false
+		}
+		return prUrl, a.kind, id, true
+	}
+	return "", 0, 0, false
+}
+
+// FocusActivityUrl switches to the Activity tab and selects the item a GitHub
+// comment, review or review-thread URL points at. It reports false when the
+// URL is for another PR or names nothing in the loaded activity.
+func (m *Model) FocusActivityUrl(url string) bool {
+	prUrl, kind, id, ok := parseActivityAnchor(url)
+	if !ok || !m.hasData() || !m.pr.Data.IsEnriched || m.pr.Data.Primary.Url != prUrl {
+		return false
+	}
+	items := m.buildActivityItems()
+	for i, item := range items {
+		if item.kind == kind && slices.Contains(item.ids, id) {
+			m.activityItems = items
+			m.activityDirty = true
+			m.activityCursor = i
+			m.GoToActivityTab()
+			return true
+		}
+	}
+	return false
 }

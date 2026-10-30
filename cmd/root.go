@@ -37,7 +37,8 @@ var (
 )
 
 var (
-	cfgFlag string
+	cfgFlag   string
+	focusFlag string
 
 	logo = lipgloss.NewStyle().Foreground(dctx.LogoColor).MarginBottom(1).SetString(constants.Logo)
 
@@ -199,6 +200,13 @@ func init() {
 		"passing this flag will allow writing debug output to debug.log",
 	)
 
+	rootCmd.Flags().StringVar(
+		&focusFlag,
+		"focus",
+		"",
+		"open the Activity tab on this PR comment, review or thread URL (https://github.com/o/r/pull/N#issuecomment-ID)",
+	)
+
 	rootCmd.Flags().String(
 		"cpuprofile",
 		"",
@@ -243,7 +251,7 @@ func init() {
 		cliBrowser.Stdout = io.Discard
 		cliBrowser.Stderr = io.Discard
 
-		model, logger := createModel(config.Location{RepoPath: repo, ConfigFlag: cfgFlag}, debug)
+		model, logger := createModel(config.Location{RepoPath: repo, ConfigFlag: cfgFlag, FocusUrl: focusFlag}, debug)
 		if logger != nil {
 			defer logger.Close()
 		}

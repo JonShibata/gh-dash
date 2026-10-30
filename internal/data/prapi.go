@@ -347,9 +347,11 @@ type Comment struct {
 	Author struct {
 		Login string
 	}
-	Body      string
-	UpdatedAt time.Time
-	CreatedAt time.Time
+	// DatabaseId is the REST id behind the `#issuecomment-<id>` anchor.
+	DatabaseId int
+	Body       string
+	UpdatedAt  time.Time
+	CreatedAt  time.Time
 }
 
 type ReviewComment struct {
@@ -397,10 +399,12 @@ type Review struct {
 	Author struct {
 		Login string
 	}
-	Body      string
-	State     string
-	UpdatedAt time.Time
-	CreatedAt time.Time
+	// DatabaseId is the REST id behind the `#pullrequestreview-<id>` anchor.
+	DatabaseId int
+	Body       string
+	State      string
+	UpdatedAt  time.Time
+	CreatedAt  time.Time
 }
 
 type Reviews struct {

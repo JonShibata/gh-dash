@@ -254,3 +254,62 @@ func TestActivityRowHeightStable(t *testing.T) {
 	require.Equal(t, 1, len(splitLines(stripANSI(unselected))))
 	require.Equal(t, 1, len(splitLines(stripANSI(selected))))
 }
+
+func TestParseActivityAnchor(t *testing.T) {
+	const pr = "https://github.com/o/r/pull/7"
+	cases := map[string]activityKind{
+		pr + "#discussion_r11":      kindThread,
+		pr + "#issuecomment-22":     kindComment,
+		pr + "#pullrequestreview-3": kindReview,
+	}
+	for url, want := range cases {
+		gotPr, kind, id, ok := parseActivityAnchor(url)
+		require.True(t, ok, url)
+		require.Equal(t, pr, gotPr)
+		require.Equal(t, want, kind)
+		require.NotZero(t, id)
+	}
+	for _, url := range []string{pr, pr + "#diff-abc", pr + "#issuecomment-x"} {
+		_, _, _, ok := parseActivityAnchor(url)
+		require.False(t, ok, url)
+	}
+}
+
+func TestFocusActivityUrlSelectsMatchingItem(t *testing.T) {
+	m := newTestModelForAction(t)
+	m.pr.Data.Primary.Url = "https://github.com/o/r/pull/7"
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	author := struct{ Login string }{Login: "octocat"}
+	enriched := data.EnrichedPullRequestData{}
+	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes, data.ReviewThread{
+		Id:   "T1",
+		Path: "file.go",
+		Comments: data.ReviewComments{Nodes: []data.ReviewComment{
+			{Author: author, DatabaseId: 11, Body: "root", CreatedAt: base},
+			{Author: author, DatabaseId: 12, Body: "reply", CreatedAt: base.Add(time.Minute)},
+		}},
+	})
+	enriched.Comments.Nodes = append(enriched.Comments.Nodes,
+		data.Comment{Author: author, DatabaseId: 22, Body: "talk", CreatedAt: base.Add(time.Hour)})
+	enriched.Reviews.Nodes = append(enriched.Reviews.Nodes,
+		data.Review{Author: author, DatabaseId: 33, State: "APPROVED", CreatedAt: base.Add(2 * time.Hour)})
+	m.pr.Data.Enriched = enriched
+	m.pr.Data.IsEnriched = true
+	markdown.InitializeMarkdownStyle(true)
+	m.SetWidth(120)
+
+	pr := m.pr.Data.Primary.Url
+	require.True(t, m.FocusActivityUrl(pr+"#discussion_r12"))
+	require.Equal(t, ActivityTab, m.SelectedTab())
+	require.Equal(t, 0, m.activityCursor)
+
+	require.True(t, m.FocusActivityUrl(pr+"#pullrequestreview-33"))
+	require.Equal(t, 2, m.activityCursor)
+
+	require.True(t, m.FocusActivityUrl(pr+"#issuecomment-22"))
+	require.Equal(t, 1, m.activityCursor)
+
+	require.False(t, m.FocusActivityUrl(pr+"#issuecomment-999"))
+	require.False(t, m.FocusActivityUrl("https://github.com/o/r/pull/8#issuecomment-22"))
+}

@@ -809,6 +809,7 @@ type Location struct {
 	RepoPath         string // path if inside a git repo
 	ConfigFlag       string // Config passed with explicit --config flag
 	SkipGlobalConfig bool   // Skip loading global config (for testing)
+	FocusUrl         string // PR comment URL to open on the Activity tab
 }
 
 func ParseConfig(location Location) (Config, error) {
