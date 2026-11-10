@@ -61,17 +61,17 @@ func TestActivityListOrderMatchesTimeline(t *testing.T) {
 	buildActivity(t, &m)
 
 	require.Len(t, m.activityItems, 3)
-	require.Equal(t, []string{"T1", "T2", "T3"},
+	require.Equal(t, []string{"T3", "T2", "T1"},
 		[]string{m.activityItems[0].threadId, m.activityItems[1].threadId, m.activityItems[2].threadId},
-		"activity items should be oldest-first to match the list layout")
+		"activity items should be newest-first")
 
-	// Default cursor is the topmost (oldest) item.
+	// Default cursor is the topmost (newest) item.
 	require.Equal(t, 0, m.activityCursor)
 	id, _, ok := m.FocusedThread()
 	require.True(t, ok)
-	require.Equal(t, "T1", id)
+	require.Equal(t, "T3", id)
 
-	// n (next) moves DOWN the list to the newer thread.
+	// n (next) moves DOWN the list to the older thread.
 	m.MoveThreadCursor(1)
 	id, _, ok = m.FocusedThread()
 	require.True(t, ok)
@@ -111,7 +111,7 @@ func TestActivityListIncludesReviewsBeyondPrimaryWindow(t *testing.T) {
 	buildActivity(t, &m)
 
 	require.Len(t, m.activityItems, 4)
-	require.Contains(t, stripANSI(m.activityItems[0].row), "ai-reviewer")
+	require.Contains(t, stripANSI(m.activityItems[3].row), "ai-reviewer")
 }
 
 // The list mixes threads with plain PR comments. x/r/R only act on review
@@ -134,7 +134,7 @@ func TestActivitySelectionMapsToThread(t *testing.T) {
 			}}},
 		},
 	)
-	// A plain PR conversation comment, newer so it sorts below the thread.
+	// A plain PR conversation comment, newer so it sorts above the thread.
 	enriched.Comments.Nodes = append(enriched.Comments.Nodes, data.Comment{
 		Author:    struct{ Login string }{Login: "octocat"},
 		Body:      "just a comment",
@@ -146,17 +146,17 @@ func TestActivitySelectionMapsToThread(t *testing.T) {
 	buildActivity(t, &m)
 
 	require.Len(t, m.activityItems, 2)
-	require.Equal(t, kindThread, m.activityItems[0].kind)
-	require.Equal(t, kindComment, m.activityItems[1].kind)
+	require.Equal(t, kindComment, m.activityItems[0].kind)
+	require.Equal(t, kindThread, m.activityItems[1].kind)
 
 	// Thread row selected → FocusedThread reports the thread.
-	m.activityCursor = 0
+	m.activityCursor = 1
 	id, _, ok := m.FocusedThread()
 	require.True(t, ok)
 	require.Equal(t, "T1", id)
 
 	// Comment row selected → not a thread, so x/r/R no-op.
-	m.activityCursor = 1
+	m.activityCursor = 0
 	_, _, ok = m.FocusedThread()
 	require.False(t, ok)
 }
@@ -302,10 +302,10 @@ func TestFocusActivityUrlSelectsMatchingItem(t *testing.T) {
 	pr := m.pr.Data.Primary.Url
 	require.True(t, m.FocusActivityUrl(pr+"#discussion_r12"))
 	require.Equal(t, ActivityTab, m.SelectedTab())
-	require.Equal(t, 0, m.activityCursor)
+	require.Equal(t, 2, m.activityCursor)
 
 	require.True(t, m.FocusActivityUrl(pr+"#pullrequestreview-33"))
-	require.Equal(t, 2, m.activityCursor)
+	require.Equal(t, 0, m.activityCursor)
 
 	require.True(t, m.FocusActivityUrl(pr+"#issuecomment-22"))
 	require.Equal(t, 1, m.activityCursor)

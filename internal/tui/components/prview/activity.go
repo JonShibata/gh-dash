@@ -169,7 +169,7 @@ func (m *Model) buildActivityItems() []activityItem {
 	}
 
 	sort.SliceStable(items, func(i, j int) bool {
-		return items[i].createdAt.Before(items[j].createdAt)
+		return items[i].createdAt.After(items[j].createdAt)
 	})
 	return items
 }

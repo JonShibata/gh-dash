@@ -168,7 +168,7 @@ func TestReplyAndResolveStashesBothTargets(t *testing.T) {
 		thread("t2", 22, false, now.Add(-1*time.Minute)),
 	)
 	buildActivity(t, &m)
-	m.MoveThreadCursor(1) // select t2
+	// Newest-first: t2 is already selected at index 0.
 
 	m.SetIsReplyingAndResolving(true)
 	require.Equal(t, 22, m.replyTargetCommentId)

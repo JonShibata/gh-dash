@@ -285,17 +285,17 @@ func TestPickReplyTargetUsesCursor(t *testing.T) {
 	older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	newer := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
-		mkThread(222, true, newer),  // newer — rendered lower on the page
-		mkThread(111, false, older), // older — rendered at the top
+		mkThread(222, true, newer),  // newer — rendered at the top
+		mkThread(111, false, older), // older — rendered lower on the page
 	)
 	m.pr.Data.Enriched = enriched
 	m.pr.Data.IsEnriched = true
 	buildActivity(t, &m)
 
-	// Default cursor (idx 0) targets the oldest/topmost thread.
-	require.Equal(t, 111, m.pickReplyTarget())
-
-	// "next review thread" (n / +1) moves DOWN the page to the newer thread.
-	m.MoveThreadCursor(1)
+	// Default cursor (idx 0) targets the newest/topmost thread.
 	require.Equal(t, 222, m.pickReplyTarget())
+
+	// "next review thread" (n / +1) moves DOWN the page to the older thread.
+	m.MoveThreadCursor(1)
+	require.Equal(t, 111, m.pickReplyTarget())
 }

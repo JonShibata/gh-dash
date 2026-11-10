@@ -55,8 +55,8 @@ type Model struct {
 	// on submit alongside replyTargetCommentId.
 	replyThenResolveThreadId string
 	// activityCursor is the index of the selected row in the Activity tab's
-	// unified list (activityItems), which is ordered oldest-first to match
-	// the list pane's top-to-bottom layout. n/N move it; x/r/R act on it
+	// unified list (activityItems), which is ordered newest-first, like
+	// GitHub's default comment sort. n/N move it; x/r/R act on it
 	// when the selected row is a review thread. Reset to 0 on PR change,
 	// clamped on move.
 	activityCursor int
