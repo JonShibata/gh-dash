@@ -139,19 +139,20 @@ var PRKeys = PRKeyMap{
 		key.WithKeys("i"),
 		key.WithHelp("i", "ai review"),
 	),
-	// Lowercase r overrides the universal Refresh binding ONLY when the
+	// Uppercase R overrides the universal "refresh all" binding ONLY when the
 	// prview is in fullscreen on the Activity tab with a focused thread
-	// (see ui.go). Outside that scope, r remains Refresh.
+	// (see ui.go). Outside that scope, R remains "refresh all", and lowercase
+	// r is never taken: it stays Refresh in every view.
 	ReviewThreadReply: key.NewBinding(
-		key.WithKeys("r"),
-		key.WithHelp("r", "reply to review thread"),
-	),
-	// Uppercase R overrides the universal "refresh all" binding ONLY in
-	// the same fullscreen/Activity/focused-thread scope as r (see ui.go).
-	// Replies and resolves the focused thread in one motion.
-	ReviewThreadReplyResolve: key.NewBinding(
 		key.WithKeys("R"),
-		key.WithHelp("R", "reply and resolve thread"),
+		key.WithHelp("R", "reply to review thread"),
+	),
+	// ctrl+r replies to and resolves the focused thread in one motion, in the
+	// same fullscreen/Activity/focused-thread scope as R (see ui.go). It has
+	// no global meaning, so it overrides nothing.
+	ReviewThreadReplyResolve: key.NewBinding(
+		key.WithKeys("ctrl+r"),
+		key.WithHelp("ctrl+r", "reply and resolve thread"),
 	),
 	NextReviewThread: key.NewBinding(
 		key.WithKeys("n"),

@@ -153,6 +153,16 @@ func (m *Model) GetSidebarContentWidth() int {
 	return max(0, m.ctx.DynamicPreviewWidth-m.ctx.Styles.Sidebar.BorderWidth)
 }
 
+// ScrollBy scrolls the viewport by n lines (positive = down, negative = up).
+func (m *Model) ScrollBy(n int) {
+	switch {
+	case n > 0:
+		m.viewport.ScrollDown(n)
+	case n < 0:
+		m.viewport.ScrollUp(-n)
+	}
+}
+
 func (m *Model) ScrollToTop() {
 	m.viewport.GotoTop()
 }

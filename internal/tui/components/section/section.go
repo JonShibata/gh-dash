@@ -45,6 +45,9 @@ type BaseModel struct {
 	PromptConfirmationBox     prompt.Model
 	IsPromptConfirmationShown bool
 	PromptConfirmationAction  string
+	// PromptConfirmationText, when set by the owning section just before
+	// GetPromptConfirmation, replaces the stock prompt for the action.
+	PromptConfirmationText    string
 	LastFetchTaskId           string
 	IsSearchSupported         bool
 	ShowAuthorIcon            bool
@@ -524,6 +527,9 @@ func (m *BaseModel) GetPromptConfirmation() string {
 			prompt = "Reopen this review thread? (Y/n) "
 		}
 
+		if m.PromptConfirmationText != "" {
+			prompt = m.PromptConfirmationText
+		}
 		m.PromptConfirmationBox.SetPrompt(prompt)
 
 		// Override PagerStyle's faint foreground (used elsewhere for page

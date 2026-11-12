@@ -12,6 +12,79 @@ type Data struct {
 	Primary    *data.PullRequestData
 	Enriched   data.EnrichedPullRequestData
 	IsEnriched bool
+	// ConflictParent is the number of the nearest PR below this one in its stack that
+	// conflicts with its base; 0 when none does.
+	ConflictParent int
+}
+
+// UnresolvedThreads is the number of review threads not yet resolved. Once
+// the PR is enriched it reads the per-PR data, which also follows a thread
+// resolved from the sidebar before the next list refresh.
+func (data Data) UnresolvedThreads() int {
+	n := 0
+	if data.IsEnriched {
+		for _, t := range data.Enriched.ReviewThreads.Nodes {
+			if !t.IsResolved {
+				n++
+			}
+		}
+		return n
+	}
+	if data.Primary == nil {
+		return 0
+	}
+	for _, t := range data.Primary.ReviewThreads.Nodes {
+		if !t.IsResolved {
+			n++
+		}
+	}
+	return n
+}
+
+// MergeState prefers the per-PR value over the list value, which GitHub computes loosely.
+func (data Data) MergeState() data.MergeStateStatus {
+	if data.IsEnriched && data.Enriched.MergeStateStatus != "" {
+		return data.Enriched.MergeStateStatus
+	}
+	return data.Primary.MergeStateStatus
+}
+
+// HasConflict reports whether the PR itself conflicts with its base branch.
+func (data Data) HasConflict() bool {
+	if data.MergeState() == "DIRTY" {
+		return true
+	}
+	if data.IsEnriched && data.Enriched.Mergeable != "" {
+		return data.Enriched.Mergeable == "CONFLICTING"
+	}
+	return data.Primary.Mergeable == "CONFLICTING"
+}
+
+// MarkStackConflicts sets ConflictParent on every PR whose base chain, through other PRs in
+// the list, reaches a PR that conflicts with its own base.
+func MarkStackConflicts(prs []Data) {
+	type key struct{ repo, branch string }
+	byHead := make(map[key]int, len(prs))
+	for i, p := range prs {
+		byHead[key{p.Primary.Repository.NameWithOwner, p.Primary.HeadRefName}] = i
+	}
+	for i, p := range prs {
+		prs[i].ConflictParent = 0
+		seen := map[int]bool{i: true}
+		curr := p
+		for {
+			parent, ok := byHead[key{curr.Primary.Repository.NameWithOwner, curr.Primary.BaseRefName}]
+			if !ok || seen[parent] {
+				break
+			}
+			seen[parent] = true
+			curr = prs[parent]
+			if curr.HasConflict() {
+				prs[i].ConflictParent = curr.GetNumber()
+				break
+			}
+		}
+	}
 }
 
 func (data Data) GetTitle() string {

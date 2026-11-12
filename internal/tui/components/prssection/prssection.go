@@ -109,7 +109,10 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 					case "markDraft":
 						cmd = tasks.PRMarkDraft(m.Ctx, sid, pr)
 					case "merge":
-						cmd = tasks.MergePR(m.Ctx, sid, pr)
+						// Take in the open PRs below it only if they are the ones the
+						// confirmation listed.
+						cmd = tasks.MergePR(m.Ctx, sid, pr,
+							m.Ctx.Stacks.Below(pr.GetRepoNameWithOwner(), pr.GetNumber()))
 					case "update":
 						cmd = tasks.UpdatePR(m.Ctx, sid, pr)
 					case "approveWorkflows":
@@ -194,6 +197,7 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 		}
 
 	case tasks.UpdatePRMsg:
+		m.applyStackMerge(msg)
 		for i, currPr := range m.Prs {
 			if currPr.Primary.Number != msg.PrNumber {
 				continue
@@ -278,6 +282,7 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 				}
 				m.Prs = msg.Prs
 			}
+			prrow.MarkStackConflicts(m.Prs)
 			m.TotalCount = msg.TotalCount
 			m.PageInfo = &msg.PageInfo
 			m.SetIsLoading(false)
@@ -324,6 +329,7 @@ func (m *Model) EnrichPR(data data.EnrichedPullRequestData) {
 		m.Prs[i].IsEnriched = true
 		m.Prs[i].Enriched = data
 	}
+	prrow.MarkStackConflicts(m.Prs)
 }
 
 func GetSectionColumns(
@@ -515,8 +521,50 @@ func (m Model) BuildRows() []table.Row {
 	return rows
 }
 
+// applyStackMerge gives the other PRs of a stack the merged or queued state of
+// the PR whose merge took them along, so the list is right before the refetch.
+func (m *Model) applyStackMerge(msg tasks.UpdatePRMsg) {
+	if len(msg.StackMembers) == 0 {
+		return
+	}
+	for i := range m.Prs {
+		p := m.Prs[i].Primary
+		if p == nil || p.Repository.NameWithOwner != msg.Repo || !slices.Contains(msg.StackMembers, p.Number) {
+			continue
+		}
+		if msg.IsMerged != nil && *msg.IsMerged {
+			p.State = "MERGED"
+			p.Mergeable = ""
+		}
+		if msg.IsInMergeQueue != nil && *msg.IsInMergeQueue {
+			p.IsInMergeQueue = true
+		}
+	}
+	m.Table.SetRows(m.BuildRows())
+}
+
+// GetPromptConfirmation is the base prompt, except that merging a PR with open
+// PRs below it in its stack names every PR that will be merged.
+func (m *Model) GetPromptConfirmation() string {
+	m.PromptConfirmationText = ""
+	if m.PromptConfirmationAction == "merge" {
+		if row := m.GetCurrRow(); row != nil {
+			if info, ok := m.Ctx.Stacks.Info(row.GetRepoNameWithOwner(), row.GetNumber()); ok {
+				m.PromptConfirmationText = info.MergePrompt(row.GetNumber())
+			}
+		}
+	}
+	return m.BaseModel.GetPromptConfirmation()
+}
+
 func (m *Model) NumRows() int {
 	return len(m.Prs)
+}
+
+// RefreshRows re-renders the rows from the current PRs, for state the rows
+// read at render time such as the unread counts.
+func (m *Model) RefreshRows() {
+	m.Table.SetRows(m.BuildRows())
 }
 
 type SectionPullRequestsFetchedMsg struct {

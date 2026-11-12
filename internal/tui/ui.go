@@ -25,6 +25,7 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/config"
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
 	"github.com/dlvhdr/gh-dash/v4/internal/git"
+	"github.com/dlvhdr/gh-dash/v4/internal/stacks"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/common"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/branch"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/branchsidebar"
@@ -49,6 +50,7 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/markdown"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/pollgate"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
+	"github.com/dlvhdr/gh-dash/v4/internal/unread"
 )
 
 // titlePrefix matches a leading ticket key or number such as "DEFBE-123 9:", "DEFBE-123:" or "42:".
@@ -117,7 +119,9 @@ func NewModel(location config.Location) Model {
 			m.tasks[task.Id] = task
 			return m.taskSpinner.Tick
 		},
-		Theme: *theme.DefaultTheme,
+		Theme:  *theme.DefaultTheme,
+		Unread: unread.New(),
+		Stacks: stacks.NewStore(),
 	}
 
 	m.footer = footer.NewModel(m.ctx)
@@ -311,14 +315,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.moveCommitCursor(math.MaxInt32)
 				return m, nil
 			case onActivity && hasThread && key.Matches(msg, keys.PRKeys.ReviewThreadReplyResolve):
-				// R → reply to the focused thread AND resolve it on
-				// submit. Wins over the global "refresh all" binding only
-				// inside this scope (same precedent as r). Checked before
-				// r so the uppercase combo isn't shadowed by it.
+				// ctrl+r → reply to the focused thread AND resolve it on
+				// submit. Only meaningful inside this scope.
 				return m, m.openSidebarForReply(m.prView.SetIsReplyingAndResolving)
 			case onActivity && hasThread && key.Matches(msg, keys.PRKeys.ReviewThreadReply):
-				// r → reply to focused thread. Wins over the global
-				// Refresh binding only inside this scope. Uses the
+				// R → reply to focused thread. Wins over the global
+				// "refresh all" binding only inside this scope; r stays
+				// Refresh everywhere. Uses the
 				// reply-specific opener so we stay on the Activity tab
 				// and the input renders inline beneath the focused
 				// thread (instead of jumping to Overview).
@@ -963,8 +966,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newSections, fetchSectionsCmds := m.fetchAllViewSections()
 		m.setCurrentViewSections(newSections)
 		m.tabs.SetCurrSectionId(1)
+		m.ctx.Unread.Load()
 		cmds = append(cmds, fetchSectionsCmds, m.tabs.Init(), fetchUser,
-			m.doRefreshAtInterval(), m.doUpdateFooterAtInterval())
+			m.doRefreshAtInterval(), m.doUpdateFooterAtInterval(),
+			m.doReloadUnreadAtInterval())
 
 	case intervalRefresh:
 		// Soft tick: trigger a fetch on the EXISTING sections rather than
@@ -1023,6 +1028,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			scmd := m.updateSection(msg.SectionId, msg.SectionType, msg.Msg)
 			cmds = append(cmds, scmd)
+
+			// Stack membership rides along with the PR list: refresh it for
+			// the repos just listed, and right after a merge, which changes
+			// the stack.
+			switch inner := msg.Msg.(type) {
+			case prssection.SectionPullRequestsFetchedMsg:
+				cmds = append(cmds, m.fetchStacks(repoNames(inner.Prs))...)
+			case tasks.UpdatePRMsg:
+				if inner.Repo != "" {
+					m.ctx.Stacks.Invalidate(inner.Repo)
+					cmds = append(cmds, m.fetchStacks([]string{inner.Repo})...)
+				}
+			}
 
 			// When the *current* section's row data updates (initial
 			// load or refetch), the cursor's underlying PR may now be a
@@ -1224,6 +1242,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// another gh-dash instance claiming the slot via its own
 		// FocusMsg will silence this one.
 
+	case tea.MouseWheelMsg:
+		if m.handleSidebarWheel(msg) {
+			return m, nil
+		}
+
 	case tea.MouseClickMsg:
 		if msg.Button != tea.MouseLeft {
 			return m, nil
@@ -1252,6 +1275,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateFooterMsg:
 		cmds = append(cmds, cmd, m.doUpdateFooterAtInterval())
+
+	case stacksFetchedMsg:
+		if msg.err != nil {
+			log.Debug("failed fetching stacks", "repo", msg.repo, "err", msg.err)
+		}
+		if m.ctx.Stacks.Done(msg.repo, msg.stacks, msg.err) {
+			m.refreshPRRows()
+			cmds = append(cmds, m.syncSidebar())
+		}
+
+	case reloadUnreadMsg:
+		// The daemon appends to the store out of process, so poll it. Only
+		// re-render the lists when a count actually changed.
+		if m.ctx.Unread.Load() {
+			m.refreshPRRows()
+		}
+		cmds = append(cmds, m.doReloadUnreadAtInterval())
 
 	case constants.ErrMsg:
 		m.ctx.Error = msg.Err
@@ -1742,6 +1782,58 @@ func (m *Model) openCommitDiff() tea.Cmd {
 	return common.ViewCommitPatch(row.GetRepoNameWithOwner(), oid)
 }
 
+const sidebarWheelLines = 3
+
+// handleSidebarWheel scrolls the preview pane when the wheel is used over
+// it. It reports whether the event was consumed. On the PR Activity tab the
+// outer viewport is pinned and only the inner detail pane scrolls, so the
+// wheel is routed there (same as j/k in fullscreen); every other tab scrolls
+// the outer sidebar viewport.
+func (m *Model) handleSidebarWheel(msg tea.MouseWheelMsg) bool {
+	if !m.sidebar.IsOpen {
+		return false
+	}
+
+	mouse := msg.Mouse()
+	var delta int
+	switch mouse.Button {
+	case tea.MouseWheelUp:
+		delta = -sidebarWheelLines
+	case tea.MouseWheelDown:
+		delta = sidebarWheelLines
+	default:
+		return false
+	}
+
+	overSidebar := m.detailFullscreen
+	if !overSidebar {
+		if m.ctx.PreviewPosition == "bottom" {
+			overSidebar = mouse.Y >= common.TabsHeight+m.ctx.MainContentHeight
+		} else {
+			overSidebar = mouse.X >= m.ctx.ScreenWidth-m.ctx.DynamicPreviewWidth
+		}
+	}
+	if !overSidebar {
+		return false
+	}
+
+	showsPR := false
+	switch m.getCurrRowData().(type) {
+	case *prrow.Data:
+		showsPR = true
+	case *notificationrow.Data:
+		showsPR = m.notificationView.GetSubjectPR() != nil
+	}
+
+	if showsPR && m.prView.SelectedTab() == prview.ActivityTab {
+		m.prView.ScrollDetail(delta)
+		m.syncSidebar()
+		return true
+	}
+	m.sidebar.ScrollBy(delta)
+	return true
+}
+
 func (m *Model) syncSidebar() tea.Cmd {
 	if !m.sidebar.IsOpen {
 		return nil
@@ -1769,6 +1861,7 @@ func (m *Model) syncSidebar() tea.Cmd {
 		m.prView.SetViewportHeight(m.sidebar.ViewportHeight())
 		m.prView.SetViewportHeight(m.sidebar.ViewportHeight())
 		m.prView.SyncActivity()
+		m.markActivityRead(row)
 		m.sidebar.SetContent(m.prView.View())
 		// Scroll to bottom if in input mode to keep inputbox visible —
 		// EXCEPT for reply-review mode, where the input renders inline
@@ -2413,6 +2506,117 @@ func (m *Model) softRefreshExistingSections() []tea.Cmd {
 	return cmds
 }
 
+// stacksFetchedMsg carries one repo's stack list from fetchStacks.
+type stacksFetchedMsg struct {
+	repo   string
+	stacks []stacks.Stack
+	err    error
+}
+
+// fetchStacks starts a stack fetch for each repo whose cache is stale and not
+// already being fetched.
+func (m *Model) fetchStacks(repos []string) []tea.Cmd {
+	var cmds []tea.Cmd
+	for _, repo := range repos {
+		if !m.ctx.Stacks.Begin(repo) {
+			continue
+		}
+		cmds = append(cmds, func() tea.Msg {
+			s, err := stacks.Fetch(repo)
+			return stacksFetchedMsg{repo: repo, stacks: s, err: err}
+		})
+	}
+	return cmds
+}
+
+// repoNames returns the distinct repos of a PR list.
+func repoNames(prs []prrow.Data) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range prs {
+		if p.Primary == nil {
+			continue
+		}
+		repo := p.Primary.Repository.NameWithOwner
+		if repo != "" && !seen[repo] {
+			seen[repo] = true
+			out = append(out, repo)
+		}
+	}
+	return out
+}
+
+// reloadUnreadMsg fires on a timer to re-read the unread store the
+// gh-pr-watch daemon writes to.
+type reloadUnreadMsg struct{}
+
+func (m *Model) doReloadUnreadAtInterval() tea.Cmd {
+	return tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+		return reloadUnreadMsg{}
+	})
+}
+
+// refreshPRRows re-renders every PR section's rows so the unread counts in
+// the comments column match the store.
+func (m *Model) refreshPRRows() {
+	for _, s := range m.prs {
+		if prSection, ok := s.(*prssection.Model); ok && prSection != nil {
+			prSection.RefreshRows()
+		}
+	}
+}
+
+// markActivityRead records that the Activity tab is showing this PR, so
+// everything on it up to its newest item counts as read. It does nothing
+// until the PR is enriched, since only then is the activity actually on
+// screen, and it never marks anything newer than what was loaded.
+func (m *Model) markActivityRead(pr *prrow.Data) {
+	if pr == nil || pr.Primary == nil || !pr.IsEnriched {
+		return
+	}
+	if m.prView.SelectedTab() != prview.ActivityTab {
+		return
+	}
+	through := latestActivity(&pr.Enriched)
+	if through.IsZero() {
+		return
+	}
+	repo, number := pr.Primary.Repository.NameWithOwner, pr.Primary.Number
+	changed, err := m.ctx.Unread.MarkRead(repo, number, through)
+	if err != nil {
+		log.Error("failed to mark PR activity read", "repo", repo, "pr", number, "err", err)
+		return
+	}
+	if changed {
+		m.refreshPRRows()
+	}
+}
+
+// latestActivity returns the time of the newest comment, review comment or
+// review on a PR. Authors hidden by config are included on purpose: the tab
+// was opened, and the daemon counts their activity too.
+func latestActivity(e *data.EnrichedPullRequestData) time.Time {
+	var latest time.Time
+	bump := func(t time.Time) {
+		if t.After(latest) {
+			latest = t
+		}
+	}
+	for _, c := range e.Comments.Nodes {
+		bump(c.CreatedAt)
+	}
+	for _, t := range e.ReviewThreads.Nodes {
+		for _, c := range t.Comments.Nodes {
+			bump(c.CreatedAt)
+		}
+	}
+	for _, r := range e.Reviews.Nodes {
+		bump(r.CreatedAt)
+		bump(r.UpdatedAt)
+	}
+	return latest
+}
+
 type updateFooterMsg struct{}
 
 func (m *Model) doUpdateFooterAtInterval() tea.Cmd {
@@ -2478,7 +2682,9 @@ func (m *Model) executeNotificationAction(action string) tea.Cmd {
 		}
 	case "pr_merge":
 		if pr != nil {
-			return tasks.MergePR(m.ctx, sid, pr)
+			// The notification prompt does not list a stack, so a PR with open PRs
+			// below it is refused rather than merged together with them.
+			return tasks.MergePR(m.ctx, sid, pr, nil)
 		}
 	case "pr_update":
 		if pr != nil {

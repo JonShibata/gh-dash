@@ -313,3 +313,30 @@ func TestFocusActivityUrlSelectsMatchingItem(t *testing.T) {
 	require.False(t, m.FocusActivityUrl(pr+"#issuecomment-999"))
 	require.False(t, m.FocusActivityUrl("https://github.com/o/r/pull/8#issuecomment-22"))
 }
+
+// A refresh that brings a newer item lands it at the top of the newest-first list.
+// The cursor must stay on the item the user was reading, not on its old row index.
+func TestActivityCursorFollowsItemWhenNewerItemArrives(t *testing.T) {
+	now := time.Now()
+	m := modelWithThreads(t,
+		thread("t1", 11, false, now.Add(-3*time.Minute)),
+		thread("t2", 22, false, now.Add(-2*time.Minute)),
+	)
+	buildActivity(t, &m)
+	m.MoveThreadCursor(1) // select t1, the older thread
+	id, _, ok := m.FocusedThread()
+	require.True(t, ok)
+	require.Equal(t, "t1", id)
+
+	enriched := m.pr.Data.Enriched
+	enriched.Url = m.pr.Data.Primary.Url
+	enriched.ReviewThreads.Nodes = append(enriched.ReviewThreads.Nodes,
+		thread("t3", 33, false, now.Add(-1*time.Minute)))
+	m.SetEnrichedPR(enriched)
+	m.SyncActivity()
+
+	require.Equal(t, 2, m.activityCursor)
+	id, _, ok = m.FocusedThread()
+	require.True(t, ok)
+	require.Equal(t, "t1", id)
+}

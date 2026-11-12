@@ -51,14 +51,14 @@ type Model struct {
 	replyTargetCommentId int
 	// replyThenResolveThreadId is the GraphQL node id of the thread to
 	// resolve after the reply posts, set by SetIsReplyingAndResolving (the
-	// R combo). Empty for a plain reply (r). Consumed and cleared by Update
+	// ctrl+r combo). Empty for a plain reply (R). Consumed and cleared by Update
 	// on submit alongside replyTargetCommentId.
 	replyThenResolveThreadId string
 	// activityCursor is the index of the selected row in the Activity tab's
 	// unified list (activityItems), which is ordered newest-first, like
-	// GitHub's default comment sort. n/N move it; x/r/R act on it
-	// when the selected row is a review thread. Reset to 0 on PR change,
-	// clamped on move.
+	// GitHub's default comment sort. n/N move it; x/R/ctrl+r act on it
+	// when the selected row is a review thread. Reset to 0 on PR change; a
+	// rebuild keeps it on the same item; clamped on move.
 	activityCursor int
 	// activityList is the top pane: a pinned, scrollable list of one-line
 	// activity rows. activityDetail is the bottom pane: the full render of
@@ -197,7 +197,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			if resolveThreadId == "" {
 				return m, replyCmd
 			}
-			// R combo: post the reply AND resolve the thread, flipping
+			// ctrl+r combo: post the reply AND resolve the thread, flipping
 			// the resolved state optimistically so the sidebar updates
 			// immediately. The two GitHub calls are independent (resolve
 			// keys on the thread id, reply on the root comment id), so
@@ -377,34 +377,50 @@ func (m *Model) renderTitle() string {
 }
 
 func (m *Model) renderBranches() string {
-	return lipgloss.JoinHorizontal(lipgloss.Left,
-		" ",
-		m.renderStatusPill(),
-		" ",
-		lipgloss.NewStyle().
-			Foreground(m.ctx.Theme.SecondaryText).
-			Render(m.pr.Data.Primary.BaseRefName+"  "+m.pr.Data.Primary.HeadRefName))
+	branches := lipgloss.NewStyle().
+		Foreground(m.ctx.Theme.SecondaryText).
+		Render(m.pr.Data.Primary.BaseRefName + "  " + m.pr.Data.Primary.HeadRefName)
+	parts := []string{" ", m.renderStatusPill(), " ", branches}
+	if info, ok := m.ctx.Stacks.Info(m.pr.Data.Primary.Repository.NameWithOwner, m.pr.Data.Primary.Number); ok {
+		fg := m.ctx.Theme.FaintText
+		if len(info.Below) > 0 {
+			// Open PRs below: this one cannot merge alone.
+			fg = m.ctx.Theme.WarningText
+		}
+		parts = append(parts, " ", lipgloss.NewStyle().Foreground(fg).Render("· "+info.Long()))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Left, parts...)
 }
 
 func (m *Model) renderStatusPill() string {
-	var bgColor color.Color
-	switch m.pr.Data.Primary.State {
-	case "OPEN":
-		if m.pr.Data.Primary.IsDraft {
-			bgColor = m.ctx.Theme.FaintText.Dark
-		} else {
-			bgColor = m.ctx.Styles.Colors.OpenPR.Dark
-		}
-	case "CLOSED":
-		bgColor = m.ctx.Styles.Colors.ClosedPR.Dark
-	case "MERGED":
-		bgColor = m.ctx.Styles.Colors.MergedPR.Dark
-	}
+	bgColor := statusPillColor(m.ctx, m.pr.Data.Primary)
 
 	return m.ctx.Styles.PrView.PillStyle.
 		BorderForeground(bgColor).
 		Background(bgColor).
 		Render(m.pr.RenderState())
+}
+
+// statusPillColor is the status pill's background. A queued or auto-merge PR is
+// still OPEN, so check those first, in the order RenderState labels them;
+// otherwise the pill would show the plain open colour.
+func statusPillColor(ctx *context.ProgramContext, pr *data.PullRequestData) color.Color {
+	switch pr.State {
+	case "OPEN":
+		switch {
+		case pr.IsInMergeQueue, pr.HasAutoMerge():
+			return ctx.Theme.WarningText.Dark
+		case pr.IsDraft:
+			return ctx.Theme.FaintText.Dark
+		default:
+			return ctx.Styles.Colors.OpenPR.Dark
+		}
+	case "CLOSED":
+		return ctx.Styles.Colors.ClosedPR.Dark
+	case "MERGED":
+		return ctx.Styles.Colors.MergedPR.Dark
+	}
+	return nil
 }
 
 func (m *Model) renderLabels() string {
@@ -756,6 +772,7 @@ func (m *Model) SetRow(d *prrow.Data) {
 		// (SetEnrichedPR, SetThreadResolvedOptimistic, SetWidth,
 		// UpdateProgramContext).
 		m.activityCursor = 0
+		m.activityItems = nil
 		m.commitCursor = 0
 		m.loadedDetailKey = ""
 		m.activityDirty = true
@@ -1270,12 +1287,12 @@ func (m *Model) SetIsReplyingToReview(isReplying bool) tea.Cmd {
 // SetIsReplyingAndResolving opens the inline reply editor like
 // SetIsReplyingToReview, but also records the focused thread so that on
 // submit the reply is posted AND the thread is resolved in one motion
-// (the R combo). Closing (isReplying=false) clears the pending resolve.
+// (the ctrl+r combo). Closing (isReplying=false) clears the pending resolve.
 func (m *Model) SetIsReplyingAndResolving(isReplying bool) tea.Cmd {
 	return m.enterReplyEditor(isReplying, true)
 }
 
-// enterReplyEditor is the shared open/close path for the r (reply) and R
+// enterReplyEditor is the shared open/close path for the R (reply) and ctrl+r
 // (reply+resolve) actions. When alsoResolve is true it stashes the
 // focused thread's GraphQL id so Update can batch a resolve after the
 // reply on submit.
@@ -1345,7 +1362,7 @@ func (m *Model) threadById(id string) (data.ReviewThread, bool) {
 }
 
 // focusedThread returns the review thread for the selected list row, or
-// ok=false when the selected row is a comment/review (so x/r/R no-op) or
+// ok=false when the selected row is a comment/review (so x/R/ctrl+r no-op) or
 // when there is no selection.
 func (m *Model) focusedThread() (data.ReviewThread, bool) {
 	sel, ok := m.selectedActivity()
@@ -1356,7 +1373,7 @@ func (m *Model) focusedThread() (data.ReviewThread, bool) {
 }
 
 // pickReplyTarget returns the root-comment databaseId of the focused
-// thread (the one R/X act on). 0 when there's nothing to reply to.
+// thread (the one R/ctrl+r act on). 0 when there's nothing to reply to.
 func (m *Model) pickReplyTarget() int {
 	t, ok := m.focusedThread()
 	if !ok || len(t.Comments.Nodes) == 0 {

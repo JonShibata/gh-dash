@@ -103,8 +103,11 @@ func classifyFIStatus(status string) CheckCategory {
 // renderFISubJobRow formats one parsed sub-job for the checks list. The
 // extra "tests" cell goes in dim text after the name so the badge column
 // stays aligned with the surrounding non-FI checks.
-func (m *Model) renderFISubJobRow(job fiSubJob) string {
+func (m *Model) renderFISubJobRow(job fiSubJob, optionalFail bool) string {
 	badge := m.renderCheckBadge(job.Category)
+	if optionalFail {
+		badge = m.renderOptionalFailBadge()
+	}
 	dim := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText)
 	tail := ""
 	if job.Tests != "" {
@@ -113,6 +116,10 @@ func (m *Model) renderFISubJobRow(job fiSubJob) string {
 	if job.Duration != "" {
 		tail += "  " + dim.Render("("+job.Duration+")")
 	}
+	if optionalFail {
+		tail += m.optionalFailTail()
+	} else if job.Category == CheckFailure {
+		tail += m.deferredRequiredTail(job.Name)
+	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, badge, " ", job.Name, tail)
 }
-

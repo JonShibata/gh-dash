@@ -123,7 +123,7 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 						case "markDraft":
 							cmd = tasks.PRMarkDraft(m.Ctx, sid, pr)
 						case "merge":
-							cmd = tasks.MergePR(m.Ctx, sid, pr)
+							cmd = tasks.MergePR(m.Ctx, sid, pr, nil)
 						case "update":
 							cmd = tasks.UpdatePR(m.Ctx, sid, pr)
 						}

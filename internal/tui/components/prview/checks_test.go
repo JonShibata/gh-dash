@@ -180,13 +180,15 @@ func makeCheckRun(name string, status string, conclusion checks.CheckRunState) d
 		Name:       graphql.String(name),
 		Status:     graphql.String(status),
 		Conclusion: conclusion,
+		IsRequired: true,
 	}
 }
 
 func makeStatusContext(context string, state string) data.StatusContext {
 	return data.StatusContext{
-		Context: graphql.String(context),
-		State:   graphql.String(state),
+		Context:    graphql.String(context),
+		State:      graphql.String(state),
+		IsRequired: true,
 	}
 }
 
@@ -636,4 +638,75 @@ func TestViewChecksBar_NarrowWidth_NoPanic(t *testing.T) {
 			m.viewChecksBar()
 		}, "viewChecksBar panicked with width=%d", width)
 	}
+}
+
+func TestNonRequiredFailuresAreSeparated(t *testing.T) {
+	optional := makeCheckRun("lint", "COMPLETED", checks.CheckRunStateFailure)
+	optional.IsRequired = false
+	m := newTestModelForChecks(t, checksTestOptions{checkRuns: []data.CheckRun{
+		optional,
+		makeCheckRun("unit", "COMPLETED", checks.CheckRunStateFailure),
+		makeCheckRun("build", "COMPLETED", checks.CheckRunStateSuccess),
+	}})
+
+	stats := m.getChecksStats()
+	require.Equal(t, 1, stats.failed)
+	require.Equal(t, 1, stats.failedOptional)
+
+	out := m.renderChecks()
+	require.Equal(t, 1, strings.Count(out, "(not required)"))
+	require.Contains(t, out, "lint")
+}
+
+func TestOnlyNonRequiredFailuresKeepRequiredChecksGreen(t *testing.T) {
+	optional := makeCheckRun("lint", "COMPLETED", checks.CheckRunStateFailure)
+	optional.IsRequired = false
+	m := newTestModelForChecks(t, checksTestOptions{checkRuns: []data.CheckRun{
+		optional,
+		makeCheckRun("build", "COMPLETED", checks.CheckRunStateSuccess),
+	}})
+
+	out, status := m.viewChecksStatus()
+	require.Equal(t, statusSuccess, status)
+	require.Contains(t, out, "All required checks have passed")
+	require.Contains(t, out, "1 non-required failing")
+}
+
+// A PR stacked on another PR has a base no ruleset covers, so GitHub reports every check as
+// not required. A failing check the default branch requires must stay a real failure.
+func TestStackedPRFailureRequiredOnDefaultBranchStaysFailing(t *testing.T) {
+	notRequiredHere := func(name string) data.CheckRun {
+		run := makeCheckRun(name, "COMPLETED", checks.CheckRunStateFailure)
+		run.IsRequired = false
+		return run
+	}
+	m := newTestModelForChecks(t, checksTestOptions{checkRuns: []data.CheckRun{
+		notRequiredHere("unit"),
+		notRequiredHere("lint"),
+	}})
+	m.pr.Data.Enriched.BaseRefName = "parent-pr-branch"
+	m.pr.Data.Enriched.DefaultBranch.DefaultBranchRef.Name = "master"
+	m.pr.Data.Enriched.DefaultBranch.DefaultBranchRef.BranchProtectionRule.RequiredStatusCheckContexts =
+		[]graphql.String{"unit"}
+
+	stats := m.getChecksStats()
+	require.Equal(t, 1, stats.failed)
+	require.Equal(t, 1, stats.failedOptional)
+
+	out := m.renderChecks()
+	require.Equal(t, 1, strings.Count(out, "(required on master)"))
+	require.Equal(t, 1, strings.Count(out, "(not required)"))
+}
+
+func TestPRIntoDefaultBranchTrustsGitHubRequiredFlag(t *testing.T) {
+	run := makeCheckRun("unit", "COMPLETED", checks.CheckRunStateFailure)
+	run.IsRequired = false
+	m := newTestModelForChecks(t, checksTestOptions{checkRuns: []data.CheckRun{run}})
+	m.pr.Data.Enriched.BaseRefName = "master"
+	m.pr.Data.Enriched.DefaultBranch.DefaultBranchRef.Name = "master"
+	m.pr.Data.Enriched.DefaultBranch.DefaultBranchRef.BranchProtectionRule.RequiredStatusCheckContexts =
+		[]graphql.String{"unit"}
+
+	require.Equal(t, 1, m.getChecksStats().failedOptional)
+	require.NotContains(t, m.renderChecks(), "(required on master)")
 }

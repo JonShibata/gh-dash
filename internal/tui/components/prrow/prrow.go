@@ -34,12 +34,29 @@ func (pr *PullRequest) renderNumComments() string {
 		return "-"
 	}
 
-	numCommentsStyle := pr.Ctx.Styles.Common.FaintTextStyle
-	return numCommentsStyle.Render(
-		fmt.Sprintf(
-			"%d",
-			pr.Data.Primary.Comments.TotalCount+pr.Data.Primary.ReviewThreads.TotalCount,
-		))
+	// Unread activity replaces the total: "●3" means three items since you
+	// last viewed the Activity tab. The cell is 4 wide, so cap at 99.
+	label := fmt.Sprintf(
+		"%d",
+		pr.Data.Primary.Comments.TotalCount+pr.Data.Primary.ReviewThreads.TotalCount,
+	)
+	style := pr.Ctx.Styles.Common.FaintTextStyle
+	if n := pr.Ctx.Unread.Count(pr.Data.Primary.Repository.NameWithOwner, pr.Data.Primary.Number); n > 0 {
+		label = fmt.Sprintf("●%d", n)
+		if n > 99 {
+			label = "●99+"
+		}
+		style = lipgloss.NewStyle().Foreground(pr.Ctx.Theme.WarningText).Bold(true)
+	}
+
+	// Unresolved review threads get a red background, whatever the cell shows.
+	if pr.Data.UnresolvedThreads() > 0 {
+		style = lipgloss.NewStyle().
+			Foreground(pr.Ctx.Theme.InvertedText).
+			Background(pr.Ctx.Theme.ErrorText).
+			Bold(true)
+	}
+	return style.Render(label)
 }
 
 func (pr *PullRequest) renderReviewStatus() string {
@@ -204,6 +221,14 @@ func (pr *PullRequest) renderExtendedTitle(isSelected bool) string {
 	if branchHidden == nil || !*branchHidden {
 		branch := baseStyle.Render(pr.Data.Primary.HeadRefName)
 		top = lipgloss.JoinHorizontal(lipgloss.Top, top, baseStyle.Render(" · "), branch)
+	}
+	if info, ok := pr.Ctx.Stacks.Info(pr.Data.Primary.Repository.NameWithOwner, pr.Data.Primary.Number); ok {
+		badge := baseStyle
+		if len(info.Below) > 0 {
+			// Open PRs below: this one cannot merge alone.
+			badge = badge.Foreground(pr.Ctx.Theme.WarningText)
+		}
+		top = lipgloss.JoinHorizontal(lipgloss.Top, top, baseStyle.Render(" · "), badge.Render(info.Short()))
 	}
 	title := pr.Data.Primary.Title
 	var titleColumn table.Column
@@ -390,7 +415,13 @@ func (pr *PullRequest) RenderState() string {
 }
 
 func (pr *PullRequest) RenderMergeStateStatus() string {
-	switch pr.Data.Primary.MergeStateStatus {
+	if pr.Data.HasConflict() {
+		return constants.BlockedIcon + " Conflicts"
+	}
+	if pr.Data.ConflictParent != 0 {
+		return constants.BlockedIcon + " Parent conflicts"
+	}
+	switch pr.Data.MergeState() {
 	case "CLEAN":
 		return constants.SuccessIcon + " Up-to-date"
 	case "BLOCKED":

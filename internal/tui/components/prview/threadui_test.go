@@ -158,8 +158,8 @@ func splitLines(s string) []string {
 	return out
 }
 
-// The R combo must stash BOTH the reply target (root comment DatabaseId)
-// and the thread id to resolve; plain reply (r) must leave the resolve id
+// The ctrl+r combo must stash BOTH the reply target (root comment DatabaseId)
+// and the thread id to resolve; plain reply (R) must leave the resolve id
 // empty so Update doesn't resolve on a normal reply.
 func TestReplyAndResolveStashesBothTargets(t *testing.T) {
 	now := time.Now()

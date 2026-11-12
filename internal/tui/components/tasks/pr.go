@@ -22,7 +22,12 @@ type SectionIdentifier struct {
 }
 
 type UpdatePRMsg struct {
-	PrNumber         int
+	PrNumber int
+	// Repo ("owner/name") and StackMembers are set when a merge took other PRs
+	// of the same stack with it: they share this message's merged or queued
+	// state.
+	Repo             string
+	StackMembers     []int
 	IsClosed         *bool
 	NewComment       *data.Comment
 	ReadyForReview   *bool
@@ -227,7 +232,12 @@ func PRMarkDraft(ctx *context.ProgramContext, section SectionIdentifier, pr data
 // Detects which path applies by probing `repository.mergeQueue.id`
 // in the same GraphQL call that fetches the PR node id, so we make
 // one round trip regardless of branch.
-func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.RowData) tea.Cmd {
+//
+// A PR in a GitHub stack with open PRs below it cannot merge alone. confirmedBelow
+// is the list of those PRs the user was shown in the confirmation; the merge
+// takes them in only when it is still exactly that list on GitHub. Pass nil
+// from a place that did not show it, and such a PR is refused instead.
+func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.RowData, confirmedBelow []int) tea.Cmd {
 	prNumber := pr.GetNumber()
 	repo := pr.GetRepoNameWithOwner()
 	owner, name, ok := strings.Cut(repo, "/")
@@ -259,6 +269,15 @@ func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.Row
 	mergeCmd := func() tea.Msg {
 		if !ok || owner == "" || name == "" {
 			return failed(fmt.Errorf("invalid repo %q", repo))
+		}
+
+		live, liveOK := liveStackInfo(repo, prNumber)
+		// failedMerge is failed plus a hint when GitHub's refusal is about stacks.
+		failedMerge := func(err error) tea.Msg {
+			if hint := stackHint(live, liveOK, err.Error()); hint != "" {
+				err = fmt.Errorf("%w%s", err, hint)
+			}
+			return failed(err)
 		}
 
 		// One probe call: PR node id (needed for the mutation) AND
@@ -298,7 +317,30 @@ func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.Row
 			return failed(fmt.Errorf("PR #%d not found in %s", prNumber, repo))
 		}
 
-		if probeResp.Data.Repository.MergeQueue != nil && probeResp.Data.Repository.MergeQueue.ID != "" {
+		queueConfigured := probeResp.Data.Repository.MergeQueue != nil && probeResp.Data.Repository.MergeQueue.ID != ""
+
+		plan, err := planStackMerge(prNumber, live, liveOK, confirmedBelow)
+		if err != nil {
+			return failed(err)
+		}
+		if plan == planStack {
+			r := probeResp.Data.Repository
+			flag := mergeMethodFlag(r.ViewerDefaultMergeMethod, r.SquashMergeAllowed,
+				r.MergeCommitAllowed, r.RebaseMergeAllowed)
+			if _, err := runStackMerge(repo, prNumber, flag); err != nil {
+				return failedMerge(err)
+			}
+			// With a merge queue the stack is queued, not merged.
+			update := UpdatePRMsg{PrNumber: prNumber, Repo: repo, StackMembers: live.Below}
+			if queueConfigured {
+				update.IsInMergeQueue = utils.BoolPtr(true)
+			} else {
+				update.IsMerged = utils.BoolPtr(true)
+			}
+			return finished(nil, update)
+		}
+
+		if queueConfigured {
 			// Queue-required repo: enqueue via mutation. Success here
 			// means the PR was added to the merge queue, NOT that it
 			// merged — flag IsInMergeQueue so the row renders as
@@ -320,14 +362,14 @@ func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.Row
 				} `json:"errors"`
 			}
 			if jsonErr := json.Unmarshal(out, &enqResp); jsonErr == nil && len(enqResp.Errors) > 0 {
-				return failed(fmt.Errorf("enqueue failed: %s", enqResp.Errors[0].Message))
+				return failedMerge(fmt.Errorf("enqueue failed: %s", enqResp.Errors[0].Message))
 			}
 			if err != nil {
 				msg := strings.TrimSpace(string(out))
 				if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
 					msg = strings.TrimSpace(string(ee.Stderr))
 				}
-				return failed(fmt.Errorf("enqueue failed: %s", msg))
+				return failedMerge(fmt.Errorf("enqueue failed: %s", msg))
 			}
 			queued := true
 			return finished(nil, UpdatePRMsg{PrNumber: prNumber, IsInMergeQueue: &queued})
@@ -343,7 +385,7 @@ func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.Row
 		mergeCmd := exec.Command("gh", args...)
 		out, err := mergeCmd.CombinedOutput()
 		if err != nil {
-			return failed(fmt.Errorf("gh pr merge: %s", strings.TrimSpace(string(out))))
+			return failedMerge(fmt.Errorf("gh pr merge: %s", strings.TrimSpace(string(out))))
 		}
 		merged := true
 		return finished(nil, UpdatePRMsg{PrNumber: prNumber, IsMerged: &merged})

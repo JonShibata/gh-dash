@@ -6,7 +6,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/config"
+	"github.com/dlvhdr/gh-dash/v4/internal/stacks"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/theme"
+	"github.com/dlvhdr/gh-dash/v4/internal/unread"
 	"github.com/dlvhdr/gh-dash/v4/internal/utils"
 )
 
@@ -52,6 +54,12 @@ type ProgramContext struct {
 	StartTask            func(task Task) tea.Cmd
 	Theme                theme.Theme
 	Styles               Styles
+	// Unread is the unread-activity store shared with the gh-pr-watch
+	// daemon. A nil store reports no unread items.
+	Unread *unread.Store
+	// Stacks caches GitHub's stacked-PR membership. A nil store reports no
+	// stacks.
+	Stacks *stacks.Store
 }
 
 func (ctx *ProgramContext) GetViewSectionsConfig() []config.SectionConfig {

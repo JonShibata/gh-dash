@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,11 +43,14 @@ type EnrichedPullRequestData struct {
 	CreatedAt         time.Time
 	Mergeable         string
 	ReviewDecision    string
-	Additions         int
-	Deletions         int
-	HeadRefName       string
-	BaseRefName       string
-	HeadRepository    struct {
+	// MergeStateStatus from the single-PR query. GitHub computes it per PR
+	// here, but loosely in bulk lists, so this one wins once it loads.
+	MergeStateStatus MergeStateStatus `graphql:"mergeStateStatus"`
+	Additions        int
+	Deletions        int
+	HeadRefName      string
+	BaseRefName      string
+	HeadRepository   struct {
 		Name string
 	}
 	HeadRef struct {
@@ -54,7 +59,12 @@ type EnrichedPullRequestData struct {
 	Labels     PRLabels  `graphql:"labels(first: 6)"`
 	Assignees  Assignees `graphql:"assignees(first: 3)"`
 	Repository Repository
-	Commits    LastCommitWithStatusChecks `graphql:"commits(last: 1)"`
+	// DefaultBranch carries the default branch's required status checks. A PR stacked on
+	// another PR has a base that no ruleset covers, so GitHub reports its checks as not
+	// required; this tells us which of them become required once the stack reaches the
+	// default branch. Aliased so it does not clash with Repository above.
+	DefaultBranch DefaultBranchRequirements  `graphql:"defaultBranch: repository"`
+	Commits       LastCommitWithStatusChecks `graphql:"commits(last: 1)"`
 	// Trimmed from last:100. Commits tab renders the list with status
 	// stats; >30 commits in a single PR is rare and bumping this is a
 	// per-tick rate-limit cost on auto-refresh.
@@ -124,10 +134,12 @@ type PullRequestData struct {
 	HeadRef struct {
 		Name string
 	}
-	Repository    Repository
-	Assignees     Assignees     `graphql:"assignees(first: 3)"`
-	Comments      Comments      `graphql:"comments"`
-	ReviewThreads ReviewThreads `graphql:"reviewThreads"`
+	Repository Repository
+	Assignees  Assignees `graphql:"assignees(first: 3)"`
+	Comments   Comments  `graphql:"comments"`
+	// first:100 is GitHub's max page size. The nodes only carry isResolved so the
+	// list can flag PRs with unresolved threads; TotalCount stays the real total.
+	ReviewThreads ReviewThreads `graphql:"reviewThreads(first: 100)"`
 	Reviews       Reviews       `graphql:"reviews(last: 3)"`
 	// Reviewer-sidebar fields. These used to live only on the per-PR
 	// enrichment fetch, so the sidebar's Reviewers section showed
@@ -199,7 +211,9 @@ type CheckRun struct {
 	// FI Tests posts a markdown table of per-job results). Lives directly
 	// on CheckRun in the GraphQL schema — there is NO nested `output`
 	// object, despite the parallel REST shape suggesting otherwise.
-	Summary    graphql.String
+	Summary graphql.String
+	// IsRequired is whether the repo's rules make this check block the merge.
+	IsRequired graphql.Boolean `graphql:"isRequired(pullRequestNumber: $prNumber)"`
 	CheckSuite struct {
 		Creator struct {
 			Login graphql.String
@@ -216,7 +230,9 @@ type StatusContext struct {
 	Context   graphql.String
 	State     graphql.String
 	TargetUrl graphql.String
-	Creator   struct {
+	// IsRequired is whether the repo's rules make this status block the merge.
+	IsRequired graphql.Boolean `graphql:"isRequired(pullRequestNumber: $prNumber)"`
+	Creator    struct {
 		Login graphql.String
 	}
 }
@@ -391,8 +407,15 @@ type Comments struct {
 	TotalCount int
 }
 
+// ReviewThreadState is the resolution state of one review thread, all the list
+// view needs to flag unresolved ones.
+type ReviewThreadState struct {
+	IsResolved bool
+}
+
 type ReviewThreads struct {
 	TotalCount int
+	Nodes      []ReviewThreadState
 }
 
 type Review struct {
@@ -583,6 +606,7 @@ func (e EnrichedPullRequestData) ToPullRequestData() PullRequestData {
 		State:             e.State,
 		Mergeable:         e.Mergeable,
 		ReviewDecision:    e.ReviewDecision,
+		MergeStateStatus:  e.MergeStateStatus,
 		Additions:         e.Additions,
 		Deletions:         e.Deletions,
 		HeadRefName:       e.HeadRefName,
@@ -710,8 +734,13 @@ func FetchPullRequest(prUrl string) (EnrichedPullRequestData, error) {
 	if err != nil {
 		return EnrichedPullRequestData{}, err
 	}
+	prNumber, err := strconv.Atoi(path.Base(parsedUrl.Path))
+	if err != nil {
+		return EnrichedPullRequestData{}, fmt.Errorf("no PR number in %q: %w", prUrl, err)
+	}
 	variables := map[string]any{
-		"url": githubv4.URI{URL: parsedUrl},
+		"url":      githubv4.URI{URL: parsedUrl},
+		"prNumber": githubv4.Int(prNumber),
 	}
 	start := time.Now()
 	log.Info("FetchPullRequest start", "url", prUrl)

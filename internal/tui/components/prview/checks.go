@@ -89,9 +89,12 @@ func (m *Model) viewChecksStatus() (string, checkSectionStatus) {
 		icon = m.ctx.Styles.Common.WaitingGlyph
 		title = "Some checks haven’t completed yet"
 		status = statusWaiting
-	} else if stats.succeeded > 0 {
+	} else if stats.succeeded > 0 || stats.failedOptional > 0 {
 		icon = m.ctx.Styles.Common.SuccessGlyph
 		title = "All checks have passed"
+		if stats.failedOptional > 0 {
+			title = "All required checks have passed"
+		}
 		status = statusSuccess
 	} else {
 		return "", statusWaiting
@@ -99,6 +102,9 @@ func (m *Model) viewChecksStatus() (string, checkSectionStatus) {
 
 	if stats.failed > 0 {
 		statStrs = append(statStrs, fmt.Sprintf("%d failing", stats.failed))
+	}
+	if stats.failedOptional > 0 {
+		statStrs = append(statStrs, fmt.Sprintf("%d non-required failing", stats.failedOptional))
 	}
 	if stats.awaitingApproval > 0 {
 		statStrs = append(statStrs, fmt.Sprintf("%d awaiting approval", stats.awaitingApproval))
@@ -127,35 +133,87 @@ func (m *Model) viewChecksStatus() (string, checkSectionStatus) {
 	return checks, status
 }
 
+// mergeInputs are the facts the merge headline is chosen from.
+type mergeInputs struct {
+	state          data.MergeStateStatus
+	conflict       bool
+	conflictParent int
+	isDraft        bool
+	reviewDecision string
+	enriched       bool
+	checks         checksStats
+}
+
+type mergeKind int
+
+const (
+	mergeReady mergeKind = iota
+	mergeBlocked
+	mergeDraft
+	mergeWaiting
+)
+
+// mergeHeadline picks the merge box title and the reason it is not ready, like GitHub's box.
+func mergeHeadline(in mergeInputs) (string, string, mergeKind) {
+	switch {
+	case in.conflict:
+		return "This branch has conflicts that must be resolved", "", mergeBlocked
+	case in.conflictParent != 0:
+		return "A pull request below this one in the stack has conflicts",
+			fmt.Sprintf("Resolve the conflicts in #%d first", in.conflictParent), mergeBlocked
+	case in.state == "CLEAN" || in.state == "UNSTABLE" || in.state == "HAS_HOOKS":
+		return "Ready to merge", "All requirements are met", mergeReady
+	case in.isDraft:
+		return "This pull request is still a work in progress",
+			"Draft pull requests cannot be merged", mergeDraft
+	case in.state == "BEHIND":
+		return "This branch is out of date with the base branch", "", mergeBlocked
+	case in.state == "BLOCKED":
+		return "Merging is blocked", blockedReason(in), mergeBlocked
+	}
+	return "Checking merge status", "", mergeWaiting
+}
+
+func blockedReason(in mergeInputs) string {
+	switch {
+	case in.enriched && in.checks.failed > 0:
+		return fmt.Sprintf("%d checks failing", in.checks.failed)
+	case in.enriched && in.checks.inProgress+in.checks.awaitingApproval > 0:
+		return fmt.Sprintf("%d checks pending", in.checks.inProgress+in.checks.awaitingApproval)
+	case in.reviewDecision == "CHANGES_REQUESTED":
+		return "Changes requested"
+	case in.reviewDecision != "APPROVED":
+		return "Needs approval"
+	}
+	return "Blocked by repository rules"
+}
+
 func (m *Model) viewMergeStatus() (string, checkSectionStatus) {
-	var icon, title, subtitle string
+	d := m.pr.Data
+	in := mergeInputs{
+		state:          d.MergeState(),
+		conflict:       d.HasConflict(),
+		conflictParent: d.ConflictParent,
+		isDraft:        d.Primary.IsDraft,
+		reviewDecision: d.Primary.ReviewDecision,
+		enriched:       d.IsEnriched,
+	}
+	if d.IsEnriched {
+		in.checks = m.getChecksStats()
+	}
+	title, subtitle, kind := mergeHeadline(in)
+
+	var icon string
 	var status checkSectionStatus
-	numReviewOwners := m.numRequestedReviewOwners()
-	if m.pr.Data.Primary.MergeStateStatus == "CLEAN" ||
-		m.pr.Data.Primary.MergeStateStatus == "UNSTABLE" {
-		icon = m.ctx.Styles.Common.SuccessGlyph
-		title = "No conflicts with base branch"
-		subtitle = "Changes can be cleanly merged"
-		status = statusSuccess
-	} else if m.pr.Data.Primary.IsDraft {
-		icon = m.ctx.Styles.Common.DraftGlyph
-		title = "This pull request is still a work in progress"
-		subtitle = "Draft pull requests cannot be merged"
-		status = statusWaiting
-	} else if m.pr.Data.Primary.MergeStateStatus == "BLOCKED" {
-		icon = m.ctx.Styles.Common.FailureGlyph
-		title = "Merging is blocked"
-		if numReviewOwners > 0 {
-			subtitle = "Waiting on code owner review"
-		}
-		status = statusFailure
-	} else if m.pr.Data.Primary.Mergeable == "CONFLICTING" {
-		icon = m.ctx.Styles.Common.FailureGlyph
-		title = "This branch has conflicts that must be resolved"
-		status = statusFailure
-		if m.pr.Data.Primary.MergeStateStatus == "CLEAN" {
-			subtitle = "Changes can be cleanly merged"
-		}
+	switch kind {
+	case mergeReady:
+		icon, status = m.ctx.Styles.Common.SuccessGlyph, statusSuccess
+	case mergeBlocked:
+		icon, status = m.ctx.Styles.Common.FailureGlyph, statusFailure
+	case mergeDraft:
+		icon, status = m.ctx.Styles.Common.DraftGlyph, statusWaiting
+	default:
+		icon, status = m.ctx.Styles.Common.WaitingGlyph, statusWaiting
 	}
 	return m.viewCheckCategory(icon, title, subtitle, true), status
 }
@@ -284,10 +342,13 @@ func (m *Model) viewChecksBar() string {
 	w := m.getIndentedContentWidth() - 6
 	stats := m.getChecksStats()
 	total := float64(
-		stats.failed + stats.skipped + stats.neutral + stats.succeeded + stats.inProgress + stats.awaitingApproval,
+		stats.failed + stats.failedOptional + stats.skipped + stats.neutral + stats.succeeded + stats.inProgress + stats.awaitingApproval,
 	)
 	numSections := 0
 	if stats.failed > 0 {
+		numSections++
+	}
+	if stats.failedOptional > 0 {
 		numSections++
 	}
 	if stats.awaitingApproval > 0 {
@@ -313,6 +374,11 @@ func (m *Model) viewChecksBar() string {
 		failWidth := int(math.Floor((float64(stats.failed) / total) * float64(w)))
 		sections = append(sections, lipgloss.NewStyle().Width(failWidth).Foreground(
 			m.ctx.Theme.ErrorText).Height(1).Render(strings.Repeat("▃", failWidth)))
+	}
+	if stats.failedOptional > 0 {
+		optWidth := int(math.Floor((float64(stats.failedOptional) / total) * float64(w)))
+		sections = append(sections, lipgloss.NewStyle().Width(optWidth).Foreground(
+			optionalFailColor).Height(1).Render(strings.Repeat("▃", optWidth)))
 	}
 	if stats.awaitingApproval > 0 {
 		awWidth := int(math.Floor((float64(stats.awaitingApproval) / total) * float64(w)))
@@ -387,6 +453,25 @@ func (m *Model) renderCheckBadge(category CheckCategory) string {
 	default:
 		return style.Background(m.ctx.Theme.FaintText).Render("· SKIP")
 	}
+}
+
+// optionalFailColor marks a failing check that does not block the merge. Purple keeps it
+// apart from blocking failures (red) and running checks (yellow).
+var optionalFailColor = lipgloss.Color("#A371F7")
+
+// renderOptionalFailBadge is the pill for a failing check that does not block the merge, in
+// a different colour from a blocking failure.
+func (m *Model) renderOptionalFailBadge() string {
+	return lipgloss.NewStyle().
+		Bold(true).
+		Foreground(m.ctx.Theme.InvertedText).
+		Background(optionalFailColor).
+		Padding(0, 1).
+		Render("✗ FAIL")
+}
+
+func (m *Model) optionalFailTail() string {
+	return "  " + lipgloss.NewStyle().Foreground(optionalFailColor).Render("(not required)")
 }
 
 // categoryFromState maps an authoritative GitHub check state — a StatusContext
@@ -497,6 +582,8 @@ func (sidebar *Model) renderChecks() string {
 	// Per-check authoritative states from GitHub's rollup, used to reconcile
 	// expanded FI Tests sub-jobs against what GitHub actually reports.
 	authStates := sidebar.authoritativeCheckCategories()
+	optional := sidebar.optionalCheckNames()
+	optionalFailures := make([]string, 0)
 
 	// Collect check suites that don't appear in statusCheckRollup
 	for _, suite := range lastCommit.Commit.CheckSuites.Nodes {
@@ -576,19 +663,24 @@ func (sidebar *Model) renderChecks() string {
 			// nothing.
 			if subJobs, _ := parseFITests(checkRun, authStates); len(subJobs) > 0 {
 				for _, j := range subJobs {
-					row := sidebar.renderFISubJobRow(j)
+					isOptionalFail := j.Category == CheckFailure && optional[j.Name]
+					row := sidebar.renderFISubJobRow(j, isOptionalFail)
 					reportedChecks[j.Name] = true
 					switch j.Category {
 					case CheckWaiting:
 						waiting = append(waiting, row)
 					case CheckFailure:
-						failures = append(failures, row)
+						target := &failures
+						if isOptionalFail {
+							target = &optionalFailures
+						}
+						*target = append(*target, row)
 						if j.URL != "" {
 							urlLine := lipgloss.NewStyle().
 								Foreground(sidebar.ctx.Theme.FaintText).
 								PaddingLeft(8).
 								Render("→ " + j.URL)
-							failures = append(failures, urlLine)
+							*target = append(*target, urlLine)
 						}
 					default:
 						rest = append(rest, row)
@@ -607,6 +699,12 @@ func (sidebar *Model) renderChecks() string {
 			checkName = string(checkRun.Name)
 			checkUrl = string(checkRun.DetailsUrl)
 			name := renderCheckRunName(checkRun)
+			if category == CheckFailure && optional[checkName] {
+				renderedStatus = sidebar.renderOptionalFailBadge()
+				name += sidebar.optionalFailTail()
+			} else if category == CheckFailure {
+				name += sidebar.deferredRequiredTail(checkName)
+			}
 			check = lipgloss.JoinHorizontal(lipgloss.Top, renderedStatus, " ", name)
 		case "StatusContext":
 			statusContext := node.StatusContext
@@ -621,12 +719,14 @@ func (sidebar *Model) renderChecks() string {
 			category, status = sidebar.renderStatusContextConclusion(statusContext)
 			checkName = string(statusContext.Context)
 			checkUrl = string(statusContext.TargetUrl)
-			check = lipgloss.JoinHorizontal(
-				lipgloss.Top,
-				status,
-				" ",
-				renderStatusContextName(statusContext),
-			)
+			name := renderStatusContextName(statusContext)
+			if category == CheckFailure && optional[checkName] {
+				status = sidebar.renderOptionalFailBadge()
+				name += sidebar.optionalFailTail()
+			} else if category == CheckFailure {
+				name += sidebar.deferredRequiredTail(checkName)
+			}
+			check = lipgloss.JoinHorizontal(lipgloss.Top, status, " ", name)
 		}
 
 		if checkName != "" {
@@ -641,7 +741,11 @@ func (sidebar *Model) renderChecks() string {
 		case CheckWaiting:
 			waiting = append(waiting, check)
 		case CheckFailure:
-			failures = append(failures, check)
+			target := &failures
+			if optional[checkName] {
+				target = &optionalFailures
+			}
+			*target = append(*target, check)
 			// Drilldown URL on its own indented line under each failure.
 			// Lets the reader copy/click the build log without opening a
 			// separate view; mirrors gplm's "→ <url>" pattern.
@@ -650,7 +754,7 @@ func (sidebar *Model) renderChecks() string {
 					Foreground(sidebar.ctx.Theme.FaintText).
 					PaddingLeft(8).
 					Render("→ " + checkUrl)
-				failures = append(failures, urlLine)
+				*target = append(*target, urlLine)
 			}
 		default:
 			rest = append(rest, check)
@@ -675,7 +779,7 @@ func (sidebar *Model) renderChecks() string {
 		}
 	}
 
-	if len(awaitingApproval)+len(pending)+len(waiting)+len(failures)+len(rest) == 0 {
+	if len(awaitingApproval)+len(pending)+len(waiting)+len(failures)+len(optionalFailures)+len(rest) == 0 {
 		return lipgloss.JoinVertical(
 			lipgloss.Left,
 			title,
@@ -712,6 +816,7 @@ func (sidebar *Model) renderChecks() string {
 	}
 
 	parts = append(parts, failures...)
+	parts = append(parts, optionalFailures...)
 	parts = append(parts, waiting...)
 	parts = append(parts, rest...)
 
@@ -726,7 +831,8 @@ func (sidebar *Model) renderChecks() string {
 type checksStats struct {
 	succeeded        int
 	neutral          int
-	failed           int
+	failed           int // required checks only
+	failedOptional   int // failing checks that do not block the merge
 	skipped          int
 	inProgress       int
 	awaitingApproval int
@@ -772,6 +878,7 @@ func (m *Model) getChecksStats() checksStats {
 	// which led to "2 failing" when only 1 had failed.
 	nodes := lastCommit.Commit.StatusCheckRollup.Contexts.Nodes
 	authStates := m.authoritativeCheckCategories()
+	optional := m.optionalCheckNames()
 
 	// Pre-pass: identify FI sub-jobs (mirrors the renderer's fiSubJobNames
 	// set). Their parent "FI Tests" CheckRun is dropped from counts since
@@ -786,7 +893,11 @@ func (m *Model) getChecksStats() checksStats {
 				fiSubJobNames[j.Name] = true
 				switch j.Category {
 				case CheckFailure:
-					res.failed++
+					if optional[j.Name] {
+						res.failedOptional++
+					} else {
+						res.failed++
+					}
 				case CheckWaiting:
 					res.inProgress++
 				case CheckSuccess:
@@ -838,7 +949,11 @@ func (m *Model) getChecksStats() checksStats {
 		case ghchecks.IsStatusWaiting(state):
 			res.inProgress++
 		case ghchecks.IsConclusionAFailure(state):
-			res.failed++
+			if optional[name] {
+				res.failedOptional++
+			} else {
+				res.failed++
+			}
 		case ghchecks.IsConclusionASkip(state):
 			res.skipped++
 		case ghchecks.IsConclusionNeutral(state):
@@ -878,6 +993,68 @@ func (m *Model) getChecksStats() checksStats {
 	}
 
 	return res
+}
+
+// notRequiredHereNames returns the names of checks GitHub says do not block this PR's merge
+// into its base. A check missing from the rollup counts as required.
+func (m *Model) notRequiredHereNames() map[string]bool {
+	names := make(map[string]bool)
+	commits := m.pr.Data.Enriched.Commits.Nodes
+	if len(commits) == 0 {
+		return names
+	}
+	for _, node := range commits[0].Commit.StatusCheckRollup.Contexts.Nodes {
+		switch node.Typename {
+		case "CheckRun":
+			if !bool(node.CheckRun.IsRequired) {
+				names[string(node.CheckRun.Name)] = true
+			}
+		case "StatusContext":
+			if !bool(node.StatusContext.IsRequired) {
+				names[string(node.StatusContext.Context)] = true
+			}
+		}
+	}
+	return names
+}
+
+// deferredRequiredNames returns the checks that do not block this PR but will once it
+// reaches the default branch. That happens for a PR stacked on another PR: no ruleset covers
+// its base, so GitHub reports every check as not required.
+func (m *Model) deferredRequiredNames() map[string]bool {
+	deferred := make(map[string]bool)
+	enriched := &m.pr.Data.Enriched
+	defaultName := enriched.DefaultBranch.Name()
+	if defaultName == "" || enriched.BaseRefName == defaultName {
+		return deferred
+	}
+	onDefault := enriched.DefaultBranch.RequiredChecks()
+	for name := range m.notRequiredHereNames() {
+		if onDefault[name] {
+			deferred[name] = true
+		}
+	}
+	return deferred
+}
+
+// optionalCheckNames returns the names of checks that block neither this PR nor the default
+// branch it is headed for.
+func (m *Model) optionalCheckNames() map[string]bool {
+	optional := m.notRequiredHereNames()
+	for name := range m.deferredRequiredNames() {
+		delete(optional, name)
+	}
+	return optional
+}
+
+// deferredRequiredTail marks a failing check that does not block this PR yet but will block
+// on the default branch.
+func (m *Model) deferredRequiredTail(name string) string {
+	if !m.deferredRequiredNames()[name] {
+		return ""
+	}
+	return "  " + lipgloss.NewStyle().Foreground(m.ctx.Theme.ErrorText).
+		Render("(required on "+m.pr.Data.Enriched.DefaultBranch.Name()+")")
 }
 
 func (m *Model) numRequestedReviewOwners() int {

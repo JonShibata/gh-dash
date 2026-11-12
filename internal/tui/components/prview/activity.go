@@ -18,7 +18,7 @@ import (
 )
 
 // activityKind tags each row in the unified activity list so the detail
-// pane knows how to render it and so x/r/R can tell whether the selected
+// pane knows how to render it and so x/R/ctrl+r can tell whether the selected
 // row is an actionable review thread.
 type activityKind int
 
@@ -39,7 +39,7 @@ type activityItem struct {
 	kind      activityKind
 	createdAt time.Time
 	// threadId is the GraphQL thread node id, non-empty only for
-	// kindThread rows. x/r/R act on it.
+	// kindThread rows. x/R/ctrl+r act on it.
 	threadId string
 	// ids are the REST ids that the item's `#...` URL anchors name: every
 	// comment of a thread, or the one comment or review.
@@ -174,6 +174,21 @@ func (m *Model) buildActivityItems() []activityItem {
 	return items
 }
 
+// rebuildActivityItems rebuilds the list and keeps the cursor on the item it was on, which moves
+// down a row each time a newer item arrives at the top.
+func (m *Model) rebuildActivityItems() {
+	prev, hadSel := m.selectedActivity()
+	m.activityItems = m.buildActivityItems()
+	if !hadSel {
+		return
+	}
+	if i := slices.IndexFunc(m.activityItems, func(item activityItem) bool {
+		return item.key() == prev.key()
+	}); i >= 0 {
+		m.activityCursor = i
+	}
+}
+
 // SyncActivity rebuilds the activity items (when dirty), sizes the two
 // panes to exactly fill the sidebar viewport, and loads content into them.
 // It is a pointer method called from the parent's syncSidebar before
@@ -188,7 +203,7 @@ func (m *Model) SyncActivity() {
 	}
 	rebuilt := false
 	if m.activityDirty {
-		m.activityItems = m.buildActivityItems()
+		m.rebuildActivityItems()
 		m.activityDirty = false
 		rebuilt = true
 	}
@@ -346,7 +361,7 @@ func (m *Model) renderActivityHeader(width int) string {
 	if count > 0 {
 		pos = m.activityCursor + 1
 	}
-	legend := " · n/N select · j/k/g/G scroll · x resolve · r reply · R reply+resolve"
+	legend := " · n/N select · j/k/g/G scroll · x resolve · R reply · ctrl+r reply+resolve"
 	line := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		accent.Render(fmt.Sprintf("%s %d/%d", constants.CommentsIcon, pos, count)),
